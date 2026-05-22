@@ -1,0 +1,9 @@
+[package]
+name = "jjinx"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = {version="1", features=["full"]}
+tokio-util = "0.7"
+thiserror = "1.0"
