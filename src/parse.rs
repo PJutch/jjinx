@@ -1,5 +1,6 @@
-use std::collections::HashMap;
 use std::io;
+use std::num::ParseIntError;
+use std::{collections::HashMap, str::Utf8Error};
 use thiserror::Error;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
@@ -9,8 +10,12 @@ pub enum ParseError {
     UnexpectedEof,
     #[error("Io error: {0}")]
     IoError(io::Error),
+    #[error("Utf8 error: {0}")]
+    Utf8Error(Utf8Error),
     #[error("Expected a digit")]
     ExpectedDigit,
+    #[error("Parse int error: {0}")]
+    ParseIntError(ParseIntError),
     #[error("Invalid HTTP version")]
     InvalidVersion,
     #[error("Expected space")]
@@ -382,18 +387,69 @@ async fn parse_headers<Reader: AsyncBufRead + Unpin>(
     }
 }
 
+async fn read_n_bytes<Reader: AsyncBufRead + Unpin>(
+    reader: &mut Reader,
+    n: usize,
+) -> Result<Vec<u8>, ParseError> {
+    let mut result = Vec::new();
+    while result.len() < n {
+        let mut buf = reader.fill_buf().await.map_err(ParseError::IoError)?;
+        if buf.is_empty() {
+            return Ok(result);
+        }
+
+        if buf.len() > n - result.len() {
+            buf = &buf[..n - result.len()]
+        }
+
+        result.extend_from_slice(buf);
+
+        let len = buf.len();
+        reader.consume(len);
+    }
+    Ok(result)
+}
+
+#[derive(PartialEq, Debug)]
+pub struct Request {
+    start_line: StartLine,
+    headers: HashMap<String, Vec<u8>>,
+    body: Vec<u8>,
+}
+
 pub async fn parse_request<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
-) -> Result<(), ParseError> {
+) -> Result<Request, ParseError> {
     let start_line = parse_start_line(reader).await?;
     try_skip_newline(reader).await?;
     let headers = parse_headers(reader).await?;
-    Ok(())
+    try_skip_newline(reader).await?;
+
+    let body = if let Some(data) = headers.get("Content-Length") {
+        let len = str::from_utf8(data)
+            .map_err(ParseError::Utf8Error)?
+            .parse()
+            .map_err(ParseError::ParseIntError)?;
+        read_n_bytes(reader, len).await?
+    } else if let Some(_) = headers.get("Transfer-Encoding") {
+        todo!("Handle Transfer-Encoding");
+    } else {
+        Vec::new()
+    };
+
+    Ok(Request {
+        start_line,
+        headers,
+        body,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::parse::{self, HttpVersion, ParseError, StartLine, Uri, parse_uri};
+    use crate::parse::{
+        self, HttpVersion, ParseError, Request, StartLine, Uri, parse_request, parse_uri,
+    };
+    use indoc::indoc;
     use std::{collections::HashMap, io::Cursor};
 
     #[tokio::test]
@@ -490,6 +546,76 @@ mod tests {
                 ("header1".to_owned(), "value1".as_bytes().to_owned()),
                 ("header2".to_owned(), "value2".as_bytes().to_owned()),
             ])
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parse_request_full() -> Result<(), ParseError> {
+        let mut reader = Cursor::new(indoc! {"
+            GET http://www.ics.uci.edu/pub/ietf/uri/#Related HTTP/1.1\r
+            header1: value1\r
+            header2:value2  \r
+            Content-Length: 48\r
+            \r
+            <html><body>something</body></html>"});
+        let start_line = parse_request(&mut reader).await?;
+        assert_eq!(
+            start_line,
+            Request {
+                start_line: StartLine {
+                    method: "GET".to_owned(),
+                    uri: Uri {
+                        scheme: "http".to_owned(),
+                        authority: "www.ics.uci.edu".to_owned(),
+                        path: ["pub", "ietf", "uri"].map(&str::to_owned).to_vec(),
+                        path_absolute: true,
+                        query: "".to_owned(),
+                        fragment: "Related".to_owned()
+                    },
+                    version: HttpVersion(1, 1)
+                },
+                headers: HashMap::from([
+                    ("header1".to_owned(), "value1".as_bytes().to_owned()),
+                    ("header2".to_owned(), "value2".as_bytes().to_owned()),
+                    ("Content-Length".to_owned(), "48".as_bytes().to_owned())
+                ]),
+                body: "<html><body>something</body></html>".as_bytes().to_owned()
+            }
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parse_request_no_body() -> Result<(), ParseError> {
+        let mut reader = Cursor::new(indoc! {"
+            GET http://www.ics.uci.edu/pub/ietf/uri/#Related HTTP/1.1\r
+            header1: value1\r
+            header2:value2  \r
+            \r
+        "});
+        let start_line = parse::parse_request(&mut reader).await?;
+        assert_eq!(
+            start_line,
+            Request {
+                start_line: StartLine {
+                    method: "GET".to_owned(),
+                    uri: Uri {
+                        scheme: "http".to_owned(),
+                        authority: "www.ics.uci.edu".to_owned(),
+                        path: ["pub", "ietf", "uri"].map(&str::to_owned).to_vec(),
+                        path_absolute: true,
+                        query: "".to_owned(),
+                        fragment: "Related".to_owned()
+                    },
+                    version: HttpVersion(1, 1)
+                },
+                headers: HashMap::from([
+                    ("header1".to_owned(), "value1".as_bytes().to_owned()),
+                    ("header2".to_owned(), "value2".as_bytes().to_owned()),
+                ]),
+                body: "".as_bytes().to_owned()
+            }
         );
         Ok(())
     }

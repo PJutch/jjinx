@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             let mut reader = BufReader::new(socket);
             match parse_request(&mut reader).await {
-                Ok(()) => {}
+                Ok(request) => println!("{request:?}"),
                 Err(err) => println!("{err}"),
             }
         });
