@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 use thiserror::Error;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
@@ -16,6 +17,12 @@ pub enum ParseError {
     ExpectedSpace,
     #[error("Uri parse error")]
     UriParseError,
+    #[error("Expected newline")]
+    ExpectedNewline,
+    #[error("Expected colon after field name")]
+    ExpectedColon,
+    #[error("Expected line feed after carraige return")]
+    ExpectedLineFeed,
 }
 
 async fn try_read_byte<Reader: AsyncBufRead + Unpin>(
@@ -51,7 +58,7 @@ async fn read_digit<Reader: AsyncBufRead + Unpin>(reader: &mut Reader) -> Result
     }
 }
 
-async fn read_fixed<Reader: AsyncBufRead + Unpin>(
+async fn skip_fixed<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
     str: &str,
 ) -> Result<bool, ParseError> {
@@ -87,7 +94,7 @@ pub struct HttpVersion(u8, u8);
 async fn parse_http_version<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
 ) -> Result<HttpVersion, ParseError> {
-    read_fixed(reader, "HTTP/").await.and_then(|matched| {
+    skip_fixed(reader, "HTTP/").await.and_then(|matched| {
         if matched {
             Ok(())
         } else {
@@ -298,18 +305,96 @@ async fn parse_start_line<Reader: AsyncBufRead + Unpin>(
     })
 }
 
-// expects reader to be buffered
+async fn try_skip_newline<Reader: AsyncBufRead + Unpin>(
+    reader: &mut Reader,
+) -> Result<bool, ParseError> {
+    match peek_byte(reader).await? {
+        Some(0xD) => {
+            reader.consume(1);
+            if read_byte(reader).await? != '\n' as u8 {
+                return Err(ParseError::ExpectedLineFeed);
+            }
+            Ok(true)
+        }
+        Some(_) => Err(ParseError::ExpectedNewline),
+        None => Ok(false),
+    }
+}
+
+fn is_whitespace(byte: u8) -> bool {
+    byte == ' ' as u8 || byte == '\t' as u8
+}
+
+async fn skip_whitespace<Reader: AsyncBufRead + Unpin>(
+    reader: &mut Reader,
+) -> Result<(), ParseError> {
+    loop {
+        if peek_byte(reader).await?.is_some_and(is_whitespace) {
+            reader.consume(1);
+        } else {
+            return Ok(());
+        }
+    }
+}
+
+async fn read_until<Reader: AsyncBufRead + Unpin>(
+    reader: &mut Reader,
+    until: u8,
+) -> Result<Vec<u8>, ParseError> {
+    let mut result = Vec::new();
+    loop {
+        if let Some(byte) = peek_byte(reader).await? {
+            if byte == until {
+                return Ok(result);
+            } else {
+                result.push(byte);
+                reader.consume(1);
+            }
+        } else {
+            return Ok(result);
+        }
+    }
+}
+
+async fn parse_headers<Reader: AsyncBufRead + Unpin>(
+    reader: &mut Reader,
+) -> Result<HashMap<String, Vec<u8>>, ParseError> {
+    let mut headers = HashMap::new();
+    loop {
+        let first_byte = peek_byte(reader).await?;
+        if first_byte == Some('\r' as u8) || first_byte == None {
+            return Ok(headers);
+        }
+
+        let field_name = read_token(reader).await?;
+        if read_byte(reader).await? != ':' as u8 {
+            return Err(ParseError::ExpectedColon);
+        }
+
+        skip_whitespace(reader).await?;
+        let mut field_value = read_until(reader, '\r' as u8).await?;
+        while field_value.last().copied().is_some_and(is_whitespace) {
+            field_value.pop();
+        }
+
+        headers.insert(field_name, field_value);
+        try_skip_newline(reader).await?;
+    }
+}
+
 pub async fn parse_request<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
 ) -> Result<(), ParseError> {
-    parse_start_line(reader).await?;
+    let start_line = parse_start_line(reader).await?;
+    try_skip_newline(reader).await?;
+    let headers = parse_headers(reader).await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use crate::parse::{self, HttpVersion, ParseError, StartLine, Uri, parse_uri};
-    use std::io::Cursor;
+    use std::{collections::HashMap, io::Cursor};
 
     #[tokio::test]
     async fn parse_uri_full() -> Result<(), ParseError> {
@@ -391,6 +476,20 @@ mod tests {
                 },
                 version: HttpVersion(1, 1)
             }
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parse_headers() -> Result<(), ParseError> {
+        let mut reader = Cursor::new("header1: value1\r\nheader2:value2  \r\n");
+        let headers = parse::parse_headers(&mut reader).await?;
+        assert_eq!(
+            headers,
+            HashMap::from([
+                ("header1".to_owned(), "value1".as_bytes().to_owned()),
+                ("header2".to_owned(), "value2".as_bytes().to_owned()),
+            ])
         );
         Ok(())
     }
