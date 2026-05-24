@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{self, Read};
 
 use tokio::io::{BufReader, BufWriter};
 use tokio::net::TcpListener;
@@ -8,6 +10,12 @@ use parse::parse_request;
 
 mod respond;
 use respond::{Response, write_response};
+
+fn read_file(path: &str) -> Result<Vec<u8>, io::Error> {
+    let mut result = Vec::new();
+    File::open(path)?.read_to_end(&mut result)?;
+    return Ok(result);
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,7 +34,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("{request:?}");
 
-            let response = "<html><head><title>test</title></head><body><p>Hello!</p></body></html>\n";
+            let response = match read_file("index.html") {
+                Ok(data) => data,
+                Err(err) => {
+                    println!("{err}");
+                    return;
+                }
+            };
+
             let mut writer = BufWriter::new(&mut socket);
             if let Err(err) = write_response(
                 &mut writer,
@@ -39,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .as_bytes()
                             .to_vec(),
                     )]),
-                    body: response.as_bytes().to_vec()
+                    body: response,
                 },
             )
             .await
