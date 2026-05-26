@@ -11,6 +11,8 @@ use parse::parse_request;
 mod respond;
 use respond::{Response, write_response};
 
+mod config;
+
 fn read_file(path: &str) -> Result<Vec<u8>, io::Error> {
     let mut result = Vec::new();
     File::open(path)?.read_to_end(&mut result)?;
