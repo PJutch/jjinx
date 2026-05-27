@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     io::{self, BufRead},
+    net::{AddrParseError, Ipv4Addr},
     num::ParseIntError,
     path::PathBuf,
     string::FromUtf8Error,
@@ -26,8 +27,8 @@ pub struct Route {
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Server {
-    pub port: Option<i16>,
-    pub ip: Option<i32>,
+    pub port: Option<u16>,
+    pub ip: Option<Ipv4Addr>,
     pub domain_names: Vec<String>,
     pub is_default: bool,
     pub routes: Vec<Route>,
@@ -41,6 +42,8 @@ pub enum ParseError {
     Utf8Error(FromUtf8Error),
     #[error("Parse int error: {0}")]
     ParseIntError(ParseIntError),
+    #[error("Address parse error: {0}")]
+    AddrParseError(AddrParseError),
     #[error("Unexpected token: {0}, expected {1}")]
     UnexpectedToken(String, String),
     #[error("Unexpected eof")]
@@ -49,8 +52,6 @@ pub enum ParseError {
     UnknownField(String),
     #[error("Duplicate field: {0}")]
     DuplicateField(String),
-    #[error("IPv4 address should have 4 octets")]
-    IpNotEnoughOctets,
     #[error("Route {0} already has content")]
     DuplicateContent(String),
 }
@@ -107,28 +108,6 @@ fn consume_fixed<Reader: BufRead>(reader: &mut Reader, expected: &str) -> Result
     } else {
         Ok(())
     }
-}
-
-fn parse_ip(ip: &str) -> Result<i32, ParseError> {
-    let mut result = 0;
-    let mut octet_start = 0;
-    for _ in 0..3 {
-        if let Some(octet_len) = ip[octet_start..].find('.') {
-            result += ip[octet_start..octet_start+octet_len]
-                .parse::<i8>()
-                .map_err(ParseError::ParseIntError)? as i32;
-            result <<= 8;
-
-            octet_start = octet_start + octet_len + 1;
-        } else {
-            return Err(ParseError::IpNotEnoughOctets);
-        }
-    }
-
-    result += ip[octet_start..]
-        .parse::<i8>()
-        .map_err(ParseError::ParseIntError)? as i32;
-    Ok(result)
 }
 
 fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError> {
@@ -203,7 +182,10 @@ fn parse_server_config<Reader: BufRead>(reader: &mut Reader) -> Result<Server, P
                 }
             }
             "ip" => {
-                let ip = parse_ip(next_token(reader)?.as_str())?;
+                let ip = next_token(reader)?
+                    .as_str()
+                    .parse()
+                    .map_err(ParseError::AddrParseError)?;
 
                 if server.ip.is_none() {
                     server.ip = Some(ip)
@@ -252,7 +234,7 @@ pub fn parse_config<Reader: BufRead>(reader: &mut Reader) -> Result<Vec<Server>,
 mod tests {
     use crate::config::{self, Content, Route, Server};
     use indoc::indoc;
-    use std::{collections::HashMap, io::Cursor};
+    use std::{collections::HashMap, io::Cursor, net::Ipv4Addr};
 
     #[test]
     fn parse_config() -> Result<(), config::ParseError> {
@@ -315,7 +297,7 @@ mod tests {
                 },
                 Server {
                     port: Some(8080),
-                    ip: Some((127 << 24) + 1),
+                    ip: Some(Ipv4Addr::from_octets([127, 0, 0, 1])),
                     domain_names: Vec::from([
                         "example.com".to_owned(),
                         "www.example.com".to_owned()

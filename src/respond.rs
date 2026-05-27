@@ -3,7 +3,7 @@ use std::{collections::HashMap, io};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 pub struct Response {
-    pub status: i64,
+    pub status: i16,
     pub headers: HashMap<String, Vec<u8>>,
     pub body: Vec<u8>,
 }

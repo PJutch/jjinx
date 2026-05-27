@@ -1,6 +1,6 @@
 use std::io;
 use std::num::ParseIntError;
-use std::{collections::HashMap, str::Utf8Error};
+use std::{collections::HashMap, str::Utf8Error, string::FromUtf8Error};
 use thiserror::Error;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
@@ -11,7 +11,9 @@ pub enum ParseError {
     #[error("Io error: {0}")]
     IoError(io::Error),
     #[error("Utf8 error: {0}")]
-    Utf8Error(Utf8Error),
+    Utf8Error(FromUtf8Error),
+    #[error("Utf8 error: {0}")]
+    Utf8ErrorSlice(Utf8Error),
     #[error("Expected a digit")]
     ExpectedDigit,
     #[error("Parse int error: {0}")]
@@ -20,8 +22,6 @@ pub enum ParseError {
     InvalidVersion,
     #[error("Expected space")]
     ExpectedSpace,
-    #[error("Uri parse error")]
-    UriParseError,
     #[error("Expected newline")]
     ExpectedNewline,
     #[error("Expected colon after field name")]
@@ -145,147 +145,118 @@ async fn read_token<Reader: AsyncBufRead + Unpin>(
     Ok(result)
 }
 
-#[derive(Default, PartialEq, Debug)]
-struct Uri {
-    scheme: String,
-    authority: String,
-    path: Vec<String>,
-    path_absolute: bool,
-    query: String,
-    fragment: String,
-}
-
-fn is_uri_char(c: u8) -> bool {
+fn is_uri_path_char(c: u8) -> bool {
     c.is_ascii_alphanumeric()
         || [
             '-', '.', '_', '~', ',', '[', ']', '!', '%', '$', '&', ':', '@', '\'', '(', ')', '*',
-            '+', ',', ';', '=', '#', '?', '/',
+            '+', ',', ';', '=', '/',
         ]
         .contains(&(c as char))
 }
 
-#[derive(PartialEq, Eq)]
-enum UriParseStep {
-    Scheme,
-    Authority,
-    Path,
-    Query,
-    Fragment,
+#[derive(Debug, Default, PartialEq)]
+pub struct Uri {
+    pub full: String,
+    pub path: String,
+    pub host: String,
 }
 
-async fn parse_uri<Reader: AsyncBufRead + Unpin>(reader: &mut Reader) -> Result<Uri, ParseError> {
-    let mut result = Uri::default();
-    let mut current = String::new();
-    let mut step = UriParseStep::Scheme;
-
-    if peek_byte(reader).await? == Some('/' as u8) {
-        result.path_absolute = true;
-        reader.consume(1);
-
-        if peek_byte(reader).await? == Some('/' as u8) {
-            step = UriParseStep::Authority;
-            reader.consume(1);
-        } else {
-            step = UriParseStep::Path;
-        }
-    }
-
+async fn read_until<Reader: AsyncBufRead + Unpin, F: Fn(u8) -> bool>(
+    reader: &mut Reader,
+    until: F,
+    output: &mut Vec<u8>,
+) -> Result<(), ParseError> {
     loop {
         if let Some(c) = peek_byte(reader).await? {
-            if !is_uri_char(c) {
+            if until(c) {
                 break;
             }
+
+            output.push(c);
+            reader.consume(1);
+        } else {
+            break;
+        }
+    }
+    Ok(())
+}
+
+async fn read_until_inclusive<Reader: AsyncBufRead + Unpin, F: Fn(u8) -> bool>(
+    reader: &mut Reader,
+    until: F,
+    output: &mut Vec<u8>,
+) -> Result<(), ParseError> {
+    loop {
+        if let Some(c) = peek_byte(reader).await? {
+            output.push(c);
             reader.consume(1);
 
-            if c == ':' as u8 && step == UriParseStep::Scheme {
-                result.scheme = std::mem::take(&mut current);
-
-                if peek_byte(reader).await? == Some('/' as u8) {
-                    result.path_absolute = true;
-                    reader.consume(1);
-
-                    if peek_byte(reader).await? == Some('/' as u8) {
-                        step = UriParseStep::Authority;
-                        reader.consume(1);
-                    } else {
-                        step = UriParseStep::Path;
-                    }
-                } else {
-                    step = UriParseStep::Path;
-                }
-            } else if c == '/' as u8 {
-                if step == UriParseStep::Scheme {
-                    result.path.push(std::mem::take(&mut current));
-                    step = UriParseStep::Path;
-                } else if step == UriParseStep::Authority {
-                    result.authority = std::mem::take(&mut current);
-                    result.path_absolute = true;
-                    step = UriParseStep::Path;
-                } else if step == UriParseStep::Path {
-                    result.path.push(std::mem::take(&mut current));
-                }
-            } else if c == '?' as u8 {
-                match step {
-                    UriParseStep::Scheme | UriParseStep::Authority => {
-                        result.authority = std::mem::take(&mut current)
-                    }
-                    UriParseStep::Path => {
-                        if !current.is_empty() {
-                            result.path.push(std::mem::take(&mut current));
-                        }
-                    }
-                    UriParseStep::Query => return Err(ParseError::UriParseError),
-                    UriParseStep::Fragment => current.push('?'),
-                }
-
-                if step != UriParseStep::Fragment {
-                    step = UriParseStep::Query;
-                }
-            } else if c == '#' as u8 && step != UriParseStep::Fragment {
-                match step {
-                    UriParseStep::Scheme | UriParseStep::Authority => {
-                        result.authority = std::mem::take(&mut current)
-                    }
-                    UriParseStep::Path => {
-                        if !current.is_empty() {
-                            result.path.push(std::mem::take(&mut current))
-                        }
-                    }
-                    UriParseStep::Query => result.query = std::mem::take(&mut current),
-                    UriParseStep::Fragment => return Err(ParseError::UriParseError),
-                }
-                step = UriParseStep::Fragment;
-            } else {
-                current.push(c as char);
+            if until(c) {
+                break;
             }
         } else {
             break;
         }
     }
+    Ok(())
+}
 
-    match step {
-        UriParseStep::Scheme | UriParseStep::Authority => {
-            result.authority = std::mem::take(&mut current);
-        }
-        UriParseStep::Path => {
-            result.path.push(std::mem::take(&mut current));
-        }
-        UriParseStep::Query => {
-            result.query = std::mem::take(&mut current);
-        }
-        UriParseStep::Fragment => {
-            result.fragment = std::mem::take(&mut current);
+async fn parse_uri<Reader: AsyncBufRead + Unpin>(reader: &mut Reader) -> Result<Uri, ParseError> {
+    let mut uri = Vec::new();
+    let mut path_start = 0;
+    let mut host = String::new();
+
+    if peek_byte(reader).await? != Some('/' as u8) {
+        read_until_inclusive(reader, |c| c == ':' as u8, &mut uri).await?;
+
+        path_start = uri.len();
+        if peek_byte(reader).await? == Some('/' as u8) {
+            uri.push('/' as u8);
+            reader.consume(1);
+
+            if peek_byte(reader).await? == Some('/' as u8) {
+                uri.push('/' as u8);
+                reader.consume(1);
+
+                let host_start = uri.len();
+                read_until(reader, |c| c == '/' as u8 || c == ':' as u8, &mut uri).await?;
+                host = String::from_utf8(uri[host_start..].to_owned())
+                    .map_err(ParseError::Utf8Error)?;
+
+                if peek_byte(reader).await? == Some(':' as u8) {
+                    read_until(reader, |c| c == '/' as u8, &mut uri).await?;
+                }
+
+                path_start = uri.len();
+            }
         }
     }
 
-    Ok(result)
+    loop {
+        if let Some(c) = peek_byte(reader).await? {
+            if !is_uri_path_char(c) {
+                break;
+            }
+
+            uri.push(c);
+            reader.consume(1);
+        } else {
+            break;
+        }
+    }
+    let path = String::from_utf8(uri[path_start..].to_owned()).map_err(ParseError::Utf8Error)?;
+
+    read_until(reader, |c| c == ' ' as u8, &mut uri).await?;
+    let full = String::from_utf8(uri.clone()).map_err(ParseError::Utf8Error)?;
+
+    Ok(Uri { full, path, host })
 }
 
 #[derive(PartialEq, Debug)]
-struct StartLine {
-    method: String,
-    uri: Uri,
-    version: HttpVersion,
+pub struct StartLine {
+    pub method: String,
+    pub uri: Uri,
+    pub version: HttpVersion,
 }
 
 async fn parse_start_line<Reader: AsyncBufRead + Unpin>(
@@ -342,25 +313,6 @@ async fn skip_whitespace<Reader: AsyncBufRead + Unpin>(
     }
 }
 
-async fn read_until<Reader: AsyncBufRead + Unpin>(
-    reader: &mut Reader,
-    until: u8,
-) -> Result<Vec<u8>, ParseError> {
-    let mut result = Vec::new();
-    loop {
-        if let Some(byte) = peek_byte(reader).await? {
-            if byte == until {
-                return Ok(result);
-            } else {
-                result.push(byte);
-                reader.consume(1);
-            }
-        } else {
-            return Ok(result);
-        }
-    }
-}
-
 async fn parse_headers<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
 ) -> Result<HashMap<String, Vec<u8>>, ParseError> {
@@ -377,7 +329,9 @@ async fn parse_headers<Reader: AsyncBufRead + Unpin>(
         }
 
         skip_whitespace(reader).await?;
-        let mut field_value = read_until(reader, '\r' as u8).await?;
+
+        let mut field_value = Vec::new();
+        read_until(reader, |c| c == '\r' as u8, &mut field_value).await?;
         while field_value.last().copied().is_some_and(is_whitespace) {
             field_value.pop();
         }
@@ -412,9 +366,9 @@ async fn read_n_bytes<Reader: AsyncBufRead + Unpin>(
 
 #[derive(PartialEq, Debug)]
 pub struct Request {
-    start_line: StartLine,
-    headers: HashMap<String, Vec<u8>>,
-    body: Vec<u8>,
+    pub start_line: StartLine,
+    pub headers: HashMap<String, Vec<u8>>,
+    pub body: Vec<u8>,
 }
 
 pub async fn parse_request<Reader: AsyncBufRead + Unpin>(
@@ -427,7 +381,7 @@ pub async fn parse_request<Reader: AsyncBufRead + Unpin>(
 
     let body = if let Some(data) = headers.get("Content-Length") {
         let len = str::from_utf8(data)
-            .map_err(ParseError::Utf8Error)?
+            .map_err(ParseError::Utf8ErrorSlice)?
             .parse()
             .map_err(ParseError::ParseIntError)?;
         read_n_bytes(reader, len).await?
@@ -455,54 +409,30 @@ mod tests {
     #[tokio::test]
     async fn parse_uri_full() -> Result<(), ParseError> {
         let mut reader = Cursor::new("http://www.ics.uci.edu/pub/ietf/uri/#Related");
+
+        let expected = Uri {
+            full: "http://www.ics.uci.edu/pub/ietf/uri/#Related".to_owned(),
+            host: "www.ics.uci.edu".to_owned(),
+            path: "/pub/ietf/uri/".to_owned(),
+        };
+
         let uri = parse_uri(&mut reader).await?;
-        assert_eq!(
-            uri,
-            Uri {
-                scheme: "http".to_owned(),
-                authority: "www.ics.uci.edu".to_owned(),
-                path: ["pub", "ietf", "uri"].map(&str::to_owned).to_vec(),
-                path_absolute: true,
-                query: "".to_owned(),
-                fragment: "Related".to_owned()
-            }
-        );
+        assert_eq!(uri, expected);
         Ok(())
     }
 
     #[tokio::test]
-    async fn parse_uri_path_only() -> Result<(), ParseError> {
+    async fn parse_uri_no_authority() -> Result<(), ParseError> {
         let mut reader = Cursor::new("/pub/ietf/uri/#Related");
-        let uri = parse_uri(&mut reader).await?;
-        assert_eq!(
-            uri,
-            Uri {
-                scheme: "".to_owned(),
-                authority: "".to_owned(),
-                path: ["pub", "ietf", "uri"].map(&str::to_owned).to_vec(),
-                path_absolute: true,
-                query: "".to_owned(),
-                fragment: "Related".to_owned()
-            }
-        );
-        Ok(())
-    }
 
-    #[tokio::test]
-    async fn parse_uri_relative() -> Result<(), ParseError> {
-        let mut reader = Cursor::new("pub/ietf/uri/#Related");
+        let expected = Uri {
+            full: "/pub/ietf/uri/#Related".to_owned(),
+            host: "".to_owned(),
+            path: "/pub/ietf/uri/".to_owned(),
+        };
+
         let uri = parse_uri(&mut reader).await?;
-        assert_eq!(
-            uri,
-            Uri {
-                scheme: "".to_owned(),
-                authority: "".to_owned(),
-                path: ["pub", "ietf", "uri"].map(&str::to_owned).to_vec(),
-                path_absolute: false,
-                query: "".to_owned(),
-                fragment: "Related".to_owned()
-            }
-        );
+        assert_eq!(uri, expected);
         Ok(())
     }
 
@@ -523,12 +453,9 @@ mod tests {
             StartLine {
                 method: "GET".to_owned(),
                 uri: Uri {
-                    scheme: "http".to_owned(),
-                    authority: "www.ics.uci.edu".to_owned(),
-                    path: ["pub", "ietf", "uri"].map(&str::to_owned).to_vec(),
-                    path_absolute: true,
-                    query: "".to_owned(),
-                    fragment: "Related".to_owned()
+                    full: "http://www.ics.uci.edu/pub/ietf/uri/#Related".to_owned(),
+                    host: "www.ics.uci.edu".to_owned(),
+                    path: "/pub/ietf/uri/".to_owned(),
                 },
                 version: HttpVersion(1, 1)
             }
@@ -566,12 +493,9 @@ mod tests {
                 start_line: StartLine {
                     method: "GET".to_owned(),
                     uri: Uri {
-                        scheme: "http".to_owned(),
-                        authority: "www.ics.uci.edu".to_owned(),
-                        path: ["pub", "ietf", "uri"].map(&str::to_owned).to_vec(),
-                        path_absolute: true,
-                        query: "".to_owned(),
-                        fragment: "Related".to_owned()
+                        full: "http://www.ics.uci.edu/pub/ietf/uri/#Related".to_owned(),
+                        host: "www.ics.uci.edu".to_owned(),
+                        path: "/pub/ietf/uri/".to_owned(),
                     },
                     version: HttpVersion(1, 1)
                 },
@@ -601,12 +525,9 @@ mod tests {
                 start_line: StartLine {
                     method: "GET".to_owned(),
                     uri: Uri {
-                        scheme: "http".to_owned(),
-                        authority: "www.ics.uci.edu".to_owned(),
-                        path: ["pub", "ietf", "uri"].map(&str::to_owned).to_vec(),
-                        path_absolute: true,
-                        query: "".to_owned(),
-                        fragment: "Related".to_owned()
+                        full: "http://www.ics.uci.edu/pub/ietf/uri/#Related".to_owned(),
+                        host: "www.ics.uci.edu".to_owned(),
+                        path: "/pub/ietf/uri/".to_owned(),
                     },
                     version: HttpVersion(1, 1)
                 },
