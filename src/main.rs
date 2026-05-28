@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::fs::File;
-use std::io::{self, Read};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::str::Utf8Error;
 use std::sync::Arc;
@@ -10,22 +9,17 @@ use tokio::io::{BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 
 mod parse;
+use parse::Request;
 use parse::parse_request;
 
 mod respond;
-use respond::{Response, write_response};
+use respond::write_response;
 
 mod config;
-use config::parse_config;
+use config::{Server, parse_config};
 
-use crate::config::{Content, Route, Server};
-use crate::parse::Request;
-
-fn read_file(path: &str) -> Result<Vec<u8>, io::Error> {
-    let mut result = Vec::new();
-    File::open(path)?.read_to_end(&mut result)?;
-    return Ok(result);
-}
+mod process;
+use process::{construct_response, find_matching_route};
 
 fn get_host(request: &Request) -> Result<&str, Utf8Error> {
     if !request.start_line.uri.host.is_empty() {
@@ -38,18 +32,6 @@ fn get_host(request: &Request) -> Result<&str, Utf8Error> {
             Ok(host_port)
         }
     }
-}
-
-fn find_matching_route<'a>(server: &'a Server, path: &str) -> Option<&'a Route> {
-    let mut best_route = None::<&Route>;
-    for route in &server.routes {
-        if path.starts_with(&route.uri)
-            && best_route.is_none_or(|best_route| best_route.uri.len() < route.uri.len())
-        {
-            best_route = Some(route);
-        }
-    }
-    best_route
 }
 
 async fn process_connection(
@@ -71,46 +53,8 @@ async fn process_connection(
             return Ok(());
         };
 
-    let response = match &route.content {
-        Content::NoContent => Response {
-            status: route.status.unwrap_or(200),
-            headers: route.headers.clone(),
-            body: Vec::new(),
-        },
-        Content::FileAny(files) => {
-            let mut body = Vec::new();
-            for file in files {
-                if file.exists() {
-                    body = read_file("index.html")?;
-                }
-            }
-
-            let mut headers = route.headers.clone();
-            headers.insert(
-                "Content-Length".to_owned(),
-                itoa::Buffer::new().format(body.len()).as_bytes().to_vec(),
-            );
-
-            Response {
-                status: route.status.unwrap_or(200),
-                headers: headers,
-                body: body,
-            }
-        }
-        Content::Redirect(uri) => {
-            let mut headers = route.headers.clone();
-            headers.insert("Location".to_owned(), uri.clone().into_bytes());
-
-            Response {
-                status: route.status.unwrap_or(308),
-                headers: headers,
-                body: Vec::new(),
-            }
-        }
-    };
-
     let mut writer = BufWriter::new(socket);
-    write_response(&mut writer, &response).await?;
+    write_response(&mut writer, &construct_response(route)?).await?;
 
     Ok(())
 }

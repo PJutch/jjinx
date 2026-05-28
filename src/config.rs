@@ -18,8 +18,18 @@ pub enum Content {
 }
 
 #[derive(Debug, Default, PartialEq)]
+pub enum UriMatcher {
+    #[default]
+    Prefix,
+    Regex,
+    PrefixPrioritiesed,
+    Exact,
+}
+
+#[derive(Debug, Default, PartialEq)]
 pub struct Route {
     pub uri: String,
+    pub matcher: UriMatcher,
     pub content: Content,
     pub status: Option<i16>,
     pub headers: HashMap<String, Vec<u8>>,
@@ -54,6 +64,8 @@ pub enum ParseError {
     DuplicateField(String),
     #[error("Route {0} already has content")]
     DuplicateContent(String),
+    #[error("Unknown matcher: {0}")]
+    UnknownMatcher(String),
 }
 
 fn skip_whitespace<Reader: BufRead>(reader: &mut Reader) -> Result<(), ParseError> {
@@ -159,8 +171,29 @@ fn read_tokens_until_newline<Reader: BufRead>(
 
 fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError> {
     let mut route = Route::default();
-    route.uri = next_token(reader)?;
-    consume_fixed(reader, "{")?;
+
+    let token1 = next_token(reader)?;
+    let token2 = next_token(reader)?;
+
+    if token2 == "{" {
+        route.uri = token1;
+    } else {
+        route.matcher = match token1.as_str() {
+            "=" => UriMatcher::Exact,
+            "~" | "~*" => UriMatcher::Regex,
+            "^~" => UriMatcher::PrefixPrioritiesed,
+            _ => return Err(ParseError::UnknownMatcher(token1)),
+        };
+
+        if token1 == "~*" {
+            route.uri += "(?i)";
+            route.uri += &token2;
+        } else {
+            route.uri = token2;
+        }
+
+        consume_fixed(reader, "{")?;
+    }
 
     loop {
         let token = next_token(reader)?;
@@ -181,7 +214,8 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
             "file" => {
                 let mut paths = read_tokens_until_newline(reader)?
                     .iter()
-                    .map(|path| path.into()).collect();
+                    .map(|path| path.into())
+                    .collect();
 
                 match route.content {
                     Content::NoContent => route.content = Content::FileAny(paths),
@@ -295,7 +329,7 @@ pub fn parse_config<Reader: BufRead>(reader: &mut Reader) -> Result<Vec<Server>,
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{self, Content, Route, Server};
+    use crate::config::{self, Content, Route, Server, UriMatcher};
     use indoc::indoc;
     use std::{collections::HashMap, io::Cursor, net::Ipv4Addr};
 
@@ -324,7 +358,7 @@ mod tests {
                 domain example.com
                 domain www.example.com
 
-                route /blocked {
+                route = /blocked {
                     status 404
                 }
             }
@@ -341,12 +375,14 @@ mod tests {
                     routes: Vec::from([
                         Route {
                             uri: "/".to_owned(),
+                            matcher: UriMatcher::Prefix,
                             content: Content::Redirect("/index.html".to_owned()),
                             status: None,
                             headers: HashMap::new(),
                         },
                         Route {
                             uri: "/index.html".to_owned(),
+                            matcher: UriMatcher::Prefix,
                             content: Content::FileAny(Vec::from([
                                 "/index.html".into(),
                                 "/index.htm".into(),
@@ -370,6 +406,7 @@ mod tests {
                     is_default: false,
                     routes: Vec::from([Route {
                         uri: "/blocked".to_owned(),
+                        matcher: UriMatcher::Exact,
                         content: Content::NoContent,
                         status: Some(404),
                         headers: HashMap::new(),
