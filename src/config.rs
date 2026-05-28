@@ -143,6 +143,20 @@ fn consume_fixed<Reader: BufRead>(reader: &mut Reader, expected: &str) -> Result
     }
 }
 
+fn read_tokens_until_newline<Reader: BufRead>(
+    reader: &mut Reader,
+) -> Result<Vec<String>, ParseError> {
+    let mut result = Vec::new();
+    loop {
+        let token = next_token(reader)?;
+        if token == "\n" {
+            break;
+        }
+        result.push(token);
+    }
+    Ok(result)
+}
+
 fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError> {
     let mut route = Route::default();
     route.uri = next_token(reader)?;
@@ -165,13 +179,14 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
                 }
             }
             "file" => {
-                let path = next_token(reader)?.into();
-                consume_fixed(reader, "\n")?;
+                let mut paths = read_tokens_until_newline(reader)?
+                    .iter()
+                    .map(|path| path.into()).collect();
 
                 match route.content {
-                    Content::NoContent => route.content = Content::FileAny(Vec::from([path])),
+                    Content::NoContent => route.content = Content::FileAny(paths),
                     Content::FileAny(mut files) => {
-                        files.push(path);
+                        files.append(&mut paths);
                         route.content = Content::FileAny(files);
                     }
                     Content::Redirect(_) => return Err(ParseError::DuplicateContent(route.uri)),
@@ -237,10 +252,8 @@ fn parse_server_config<Reader: BufRead>(reader: &mut Reader) -> Result<Server, P
                 }
             }
             "domain" => {
-                let domain = next_token(reader)?;
-                consume_fixed(reader, "\n")?;
-
-                server.domain_names.push(domain);
+                let mut domains = read_tokens_until_newline(reader)?;
+                server.domain_names.append(&mut domains);
             }
             "default" => {
                 consume_fixed(reader, "\n")?;
@@ -298,9 +311,7 @@ mod tests {
                 }
 
                 route /index.html {
-                    file /index.html
-                    file /index.htm
-                    file \"/has a space.html\"
+                    file /index.html /index.htm \"/has a space.html\"
                     header Content-Type text/html
                 }
             }
