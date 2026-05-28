@@ -28,6 +28,10 @@ pub enum ParseError {
     ExpectedColon,
     #[error("Expected line feed after carraige return")]
     ExpectedLineFeed,
+    #[error("Cut percent encoding")]
+    CutPersonEncoding,
+    #[error("Percent encoding should have hex digits, not byte value {0}")]
+    InvalidParcentEncodingDigit(u8),
 }
 
 async fn try_read_byte<Reader: AsyncBufRead + Unpin>(
@@ -201,6 +205,87 @@ async fn read_until_inclusive<Reader: AsyncBufRead + Unpin, F: Fn(u8) -> bool>(
     Ok(())
 }
 
+fn hex_digit_to_i8(digit: u8) -> Result<u8, ParseError> {
+    if digit.is_ascii_digit() {
+        Ok(digit - '0' as u8)
+    } else if 'a' as u8 <= digit && digit <= 'f' as u8 {
+        Ok(digit - 'a' as u8 + 10)
+    } else if 'A' as u8 <= digit && digit <= 'F' as u8 {
+        Ok(digit - 'A' as u8 + 10)
+    } else {
+        Err(ParseError::InvalidParcentEncodingDigit(digit))
+    }
+}
+
+fn compress_last_component(path: &mut Vec<u8>, last_slash: &mut usize) {
+    if &path[*last_slash..] == "/.".as_bytes() || path == ".".as_bytes() {
+        path.pop();
+        path.pop();
+    } else if &path[*last_slash..] == "/..".as_bytes() {
+        for _ in 0..3 {
+            path.pop();
+        }
+
+        *last_slash = path
+            .iter()
+            .copied()
+            .rposition(|c| c == '/' as u8)
+            .unwrap_or(0);
+
+        if &path[*last_slash..] != "/..".as_bytes() && path != "..".as_bytes() && !path.is_empty() {
+            while path.len() > *last_slash {
+                path.pop();
+            }
+        } else {
+            for c in "/..".as_bytes().iter().copied() {
+                path.push(c);
+            }
+        }
+    }
+}
+
+fn uri_decode(data: &[u8]) -> Result<String, ParseError> {
+    let mut decoded = Vec::new();
+    let mut last_slash = 0;
+    let mut percent_encoded_digits = 0;
+    let mut perecent_encoded_byte = 0;
+
+    for c in data.iter().copied() {
+        if percent_encoded_digits > 0 {
+            perecent_encoded_byte <<= 4;
+            perecent_encoded_byte += hex_digit_to_i8(c)?;
+
+            percent_encoded_digits -= 1;
+            if percent_encoded_digits == 0 {
+                if percent_encoded_digits != '/' as u8 {
+                    decoded.push(perecent_encoded_byte);
+                    perecent_encoded_byte = 0;
+                }
+            }
+        } else if c == '%' as u8 {
+            percent_encoded_digits = 2;
+        } else if c == '/' as u8 {
+            if last_slash + 1 == decoded.len() {
+                continue;
+            } else {
+                compress_last_component(&mut decoded, &mut last_slash);
+                decoded.push(c);
+                last_slash = decoded.len() - 1;
+            }
+        } else {
+            decoded.push(c);
+        }
+    }
+
+    compress_last_component(&mut decoded, &mut last_slash);
+
+    if percent_encoded_digits > 0 {
+        return Err(ParseError::CutPersonEncoding);
+    }
+
+    Ok(String::from_utf8(decoded).map_err(ParseError::Utf8Error)?)
+}
+
 async fn parse_uri<Reader: AsyncBufRead + Unpin>(reader: &mut Reader) -> Result<Uri, ParseError> {
     let mut uri = Vec::new();
     let mut path_start = 0;
@@ -244,7 +329,7 @@ async fn parse_uri<Reader: AsyncBufRead + Unpin>(reader: &mut Reader) -> Result<
             break;
         }
     }
-    let path = String::from_utf8(uri[path_start..].to_owned()).map_err(ParseError::Utf8Error)?;
+    let path = uri_decode(&uri[path_start..])?;
 
     read_until(reader, |c| c == ' ' as u8, &mut uri).await?;
     let full = String::from_utf8(uri.clone()).map_err(ParseError::Utf8Error)?;
@@ -429,6 +514,36 @@ mod tests {
             full: "/pub/ietf/uri/#Related".to_owned(),
             host: "".to_owned(),
             path: "/pub/ietf/uri/".to_owned(),
+        };
+
+        let uri = parse_uri(&mut reader).await?;
+        assert_eq!(uri, expected);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parse_uri_percents() -> Result<(), ParseError> {
+        let mut reader = Cursor::new("/%70ub/ietf/uri/#Related");
+
+        let expected = Uri {
+            full: "/%70ub/ietf/uri/#Related".to_owned(),
+            host: "".to_owned(),
+            path: "/pub/ietf/uri/".to_owned(),
+        };
+
+        let uri = parse_uri(&mut reader).await?;
+        assert_eq!(uri, expected);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parse_uri_path_compression() -> Result<(), ParseError> {
+        let mut reader = Cursor::new("/..//./stays/removed/../#Related");
+
+        let expected = Uri {
+            full: "/..//./stays/removed/../#Related".to_owned(),
+            host: "".to_owned(),
+            path: "/../stays/".to_owned(),
         };
 
         let uri = parse_uri(&mut reader).await?;
