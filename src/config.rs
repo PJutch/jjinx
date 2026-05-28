@@ -64,7 +64,7 @@ fn skip_whitespace<Reader: BufRead>(reader: &mut Reader) -> Result<(), ParseErro
         }
 
         for (i, c) in buf.iter().copied().enumerate() {
-            if !c.is_ascii_whitespace() {
+            if !c.is_ascii_whitespace() || c == '\n' as u8 {
                 reader.consume(i);
                 return Ok(());
             }
@@ -75,9 +75,18 @@ fn skip_whitespace<Reader: BufRead>(reader: &mut Reader) -> Result<(), ParseErro
     }
 }
 
+#[derive(PartialEq)]
+enum TokenizerMode {
+    NORMAL,
+    QUOTED,
+    COMMENT,
+}
+
 fn next_token<Reader: BufRead>(reader: &mut Reader) -> Result<String, ParseError> {
     skip_whitespace(reader)?;
+
     let mut token = Vec::new();
+    let mut mode = TokenizerMode::NORMAL;
 
     'fill_buf: loop {
         let buf = reader.fill_buf().map_err(ParseError::IoError)?;
@@ -86,12 +95,36 @@ fn next_token<Reader: BufRead>(reader: &mut Reader) -> Result<String, ParseError
         }
 
         for (i, c) in buf.iter().copied().enumerate() {
-            if c.is_ascii_whitespace() {
-                reader.consume(i);
-                break 'fill_buf;
+            if mode == TokenizerMode::QUOTED {
+                if c == '"' as u8 {
+                    reader.consume(i + 1);
+                    break 'fill_buf;
+                } else {
+                    token.push(c);
+                }
+            } else if mode == TokenizerMode::COMMENT {
+                if c == '\n' as u8 {
+                    mode = TokenizerMode::NORMAL;
+                }
+            } else {
+                if c == '#' as u8 {
+                    mode = TokenizerMode::COMMENT;
+                } else if c == '"' as u8 && token.is_empty() {
+                    mode = TokenizerMode::QUOTED;
+                } else if c == '"' as u8 && !token.is_empty() {
+                    reader.consume(i);
+                    break 'fill_buf;
+                } else if c == '\n' as u8 && token.is_empty() {
+                    token.push(c);
+                    reader.consume(i + 1);
+                    break 'fill_buf;
+                } else if c.is_ascii_whitespace() {
+                    reader.consume(i);
+                    break 'fill_buf;
+                } else {
+                    token.push(c);
+                }
             }
-
-            token.push(c);
         }
 
         let len = buf.len();
@@ -123,6 +156,8 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
                     .parse()
                     .map_err(ParseError::ParseIntError)?;
 
+                consume_fixed(reader, "\n")?;
+
                 if route.status.is_none() {
                     route.status = Some(status)
                 } else {
@@ -131,6 +166,7 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
             }
             "file" => {
                 let path = next_token(reader)?.into();
+                consume_fixed(reader, "\n")?;
 
                 match route.content {
                     Content::NoContent => route.content = Content::FileAny(Vec::from([path])),
@@ -143,6 +179,7 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
             }
             "redirect" => {
                 let uri = next_token(reader)?;
+                consume_fixed(reader, "\n")?;
 
                 match route.content {
                     Content::NoContent => route.content = Content::Redirect(uri),
@@ -152,9 +189,11 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
             "header" => {
                 let header_name = next_token(reader)?;
                 let header_value = next_token(reader)?;
+                consume_fixed(reader, "\n")?;
 
                 route.headers.insert(header_name, header_value.into_bytes());
             }
+            "\n" => {}
             "}" => break,
             "" => return Err(ParseError::UnexpectedEof),
             _ => return Err(ParseError::UnknownField(token)),
@@ -175,6 +214,8 @@ fn parse_server_config<Reader: BufRead>(reader: &mut Reader) -> Result<Server, P
                     .parse()
                     .map_err(ParseError::ParseIntError)?;
 
+                consume_fixed(reader, "\n")?;
+
                 if server.port.is_none() {
                     server.port = Some(port)
                 } else {
@@ -187,6 +228,8 @@ fn parse_server_config<Reader: BufRead>(reader: &mut Reader) -> Result<Server, P
                     .parse()
                     .map_err(ParseError::AddrParseError)?;
 
+                consume_fixed(reader, "\n")?;
+
                 if server.ip.is_none() {
                     server.ip = Some(ip)
                 } else {
@@ -195,9 +238,13 @@ fn parse_server_config<Reader: BufRead>(reader: &mut Reader) -> Result<Server, P
             }
             "domain" => {
                 let domain = next_token(reader)?;
+                consume_fixed(reader, "\n")?;
+
                 server.domain_names.push(domain);
             }
             "default" => {
+                consume_fixed(reader, "\n")?;
+
                 if server.is_default {
                     return Err(ParseError::DuplicateField(token));
                 } else {
@@ -206,7 +253,9 @@ fn parse_server_config<Reader: BufRead>(reader: &mut Reader) -> Result<Server, P
             }
             "route" => {
                 server.routes.push(parse_route(reader)?);
+                consume_fixed(reader, "\n")?;
             }
+            "\n" => {}
             "}" => break,
             "" => return Err(ParseError::UnexpectedEof),
             _ => return Err(ParseError::UnknownField(token)),
@@ -222,6 +271,7 @@ pub fn parse_config<Reader: BufRead>(reader: &mut Reader) -> Result<Vec<Server>,
         let token = next_token(reader)?;
         match token.as_str() {
             "server" => servers.push(parse_server_config(reader)?),
+            "\n" => {}
             "" => break,
             _ => return Err(ParseError::UnknownField(token)),
         }
@@ -250,9 +300,12 @@ mod tests {
                 route /index.html {
                     file /index.html
                     file /index.htm
+                    file \"/has a space.html\"
                     header Content-Type text/html
                 }
             }
+
+            # a comment
 
             server {
                 port 8080
@@ -285,7 +338,8 @@ mod tests {
                             uri: "/index.html".to_owned(),
                             content: Content::FileAny(Vec::from([
                                 "/index.html".into(),
-                                "/index.htm".into()
+                                "/index.htm".into(),
+                                "/has a space.html".into(),
                             ])),
                             status: None,
                             headers: HashMap::from(HashMap::from([(

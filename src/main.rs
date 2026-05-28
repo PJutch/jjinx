@@ -41,12 +41,15 @@ fn get_host(request: &Request) -> Result<&str, Utf8Error> {
 }
 
 fn find_matching_route<'a>(server: &'a Server, path: &str) -> Option<&'a Route> {
+    let mut best_route = None::<&Route>;
     for route in &server.routes {
-        if route.uri.starts_with(path) {
-            return Some(route);
+        if path.starts_with(&route.uri)
+            && best_route.is_none_or(|best_route| best_route.uri.len() < route.uri.len())
+        {
+            best_route = Some(route);
         }
     }
-    None
+    best_route
 }
 
 async fn process_connection(
@@ -151,7 +154,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         tokio::spawn(async move {
             run_server(server).await;
         })
-    })).await;
+    }))
+    .await;
 
     Ok(())
 }
