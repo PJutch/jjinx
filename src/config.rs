@@ -30,7 +30,7 @@ pub enum UriMatcher {
 pub struct Route {
     pub uri: String,
     pub matcher: UriMatcher,
-    pub content: Content,
+    pub content: Option<Content>,
     pub status: Option<i16>,
     pub headers: HashMap<String, Vec<u8>>,
 }
@@ -116,7 +116,13 @@ fn next_token<Reader: BufRead>(reader: &mut Reader) -> Result<String, ParseError
                 }
             } else if mode == TokenizerMode::COMMENT {
                 if c == '\n' as u8 {
-                    mode = TokenizerMode::NORMAL;
+                    if token.is_empty() {
+                        token.push(c);
+                        reader.consume(i + 1);
+                    } else {
+                        reader.consume(i);
+                    }
+                    break 'fill_buf;
                 }
             } else {
                 if c == '#' as u8 {
@@ -131,6 +137,9 @@ fn next_token<Reader: BufRead>(reader: &mut Reader) -> Result<String, ParseError
                     reader.consume(i + 1);
                     break 'fill_buf;
                 } else if c.is_ascii_whitespace() {
+                    reader.consume(i);
+                    break 'fill_buf;
+                } else if c == '}' as u8 && !token.is_empty() {
                     reader.consume(i);
                     break 'fill_buf;
                 } else {
@@ -211,6 +220,13 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
                     return Err(ParseError::DuplicateField(token));
                 }
             }
+            "nocontent" => {
+                if route.content.is_none() {
+                    route.content = Some(Content::NoContent);
+                } else {
+                    return Err(ParseError::DuplicateContent(route.uri));
+                }
+            }
             "file" => {
                 let mut paths = read_tokens_until_newline(reader)?
                     .iter()
@@ -218,21 +234,22 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
                     .collect();
 
                 match route.content {
-                    Content::NoContent => route.content = Content::FileAny(paths),
-                    Content::FileAny(mut files) => {
+                    None => route.content = Some(Content::FileAny(paths)),
+                    Some(Content::FileAny(mut files)) => {
                         files.append(&mut paths);
-                        route.content = Content::FileAny(files);
+                        route.content = Some(Content::FileAny(files));
                     }
-                    Content::Redirect(_) => return Err(ParseError::DuplicateContent(route.uri)),
+                    Some(_) => return Err(ParseError::DuplicateContent(route.uri)),
                 }
             }
             "redirect" => {
                 let uri = next_token(reader)?;
                 consume_fixed(reader, "\n")?;
 
-                match route.content {
-                    Content::NoContent => route.content = Content::Redirect(uri),
-                    _ => return Err(ParseError::DuplicateContent(route.uri)),
+                if route.content.is_none() {
+                    route.content = Some(Content::Redirect(uri));
+                } else {
+                    return Err(ParseError::DuplicateContent(route.uri));
                 }
             }
             "header" => {
@@ -348,6 +365,8 @@ mod tests {
                     file /index.html /index.htm \"/has a space.html\"
                     header Content-Type text/html
                 }
+
+                route /images/ {}
             }
 
             # a comment
@@ -359,6 +378,7 @@ mod tests {
                 domain www.example.com
 
                 route = /blocked {
+                    nocontent
                     status 404
                 }
             }
@@ -376,24 +396,31 @@ mod tests {
                         Route {
                             uri: "/".to_owned(),
                             matcher: UriMatcher::Prefix,
-                            content: Content::Redirect("/index.html".to_owned()),
+                            content: Some(Content::Redirect("/index.html".to_owned())),
                             status: None,
                             headers: HashMap::new(),
                         },
                         Route {
                             uri: "/index.html".to_owned(),
                             matcher: UriMatcher::Prefix,
-                            content: Content::FileAny(Vec::from([
+                            content: Some(Content::FileAny(Vec::from([
                                 "/index.html".into(),
                                 "/index.htm".into(),
                                 "/has a space.html".into(),
-                            ])),
+                            ]))),
                             status: None,
                             headers: HashMap::from(HashMap::from([(
                                 "Content-Type".to_owned(),
                                 "text/html".into()
                             )])),
                         },
+                        Route {
+                            uri: "/images/".to_owned(),
+                            matcher: UriMatcher::Prefix,
+                            content: None,
+                            status: None,
+                            headers: HashMap::new()
+                        }
                     ]),
                 },
                 Server {
@@ -407,7 +434,7 @@ mod tests {
                     routes: Vec::from([Route {
                         uri: "/blocked".to_owned(),
                         matcher: UriMatcher::Exact,
-                        content: Content::NoContent,
+                        content: Some(Content::NoContent),
                         status: Some(404),
                         headers: HashMap::new(),
                     }])

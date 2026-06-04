@@ -1,7 +1,7 @@
-use std::cmp::max_by_key;
 use std::fs::File;
 use std::io;
 use std::io::Read;
+use std::{cmp::max_by_key, fs};
 
 use regex::Regex;
 
@@ -61,14 +61,43 @@ fn read_file(path: &str) -> Result<Vec<u8>, io::Error> {
     return Ok(result);
 }
 
-pub fn construct_response(route: &Route) -> Result<Response, io::Error> {
+pub fn construct_response(route: &Route, request_path: &str) -> Result<Response, io::Error> {
     Ok(match &route.content {
-        Content::NoContent => Response {
+        None => match route.status {
+            Some(200) | None => {
+                let path = request_path.strip_prefix('/').unwrap_or(request_path);
+                if fs::exists(path)? {
+                    Response {
+                        status: 200,
+                        headers: route.headers.clone(),
+                        body: read_file(path)?,
+                    }
+                } else if route.status.is_some() {
+                    Response {
+                        status: 200,
+                        headers: route.headers.clone(),
+                        body: Vec::new(),
+                    }
+                } else {
+                    Response {
+                        status: 404,
+                        headers: route.headers.clone(),
+                        body: Vec::new(),
+                    }
+                }
+            }
+            Some(status) => Response {
+                status,
+                headers: route.headers.clone(),
+                body: Vec::new(),
+            },
+        },
+        Some(Content::NoContent) => Response {
             status: route.status.unwrap_or(200),
             headers: route.headers.clone(),
             body: Vec::new(),
         },
-        Content::FileAny(files) => {
+        Some(Content::FileAny(files)) => {
             let mut body = Vec::new();
             for file in files {
                 if file.exists() {
@@ -88,7 +117,7 @@ pub fn construct_response(route: &Route) -> Result<Response, io::Error> {
                 body: body,
             }
         }
-        Content::Redirect(uri) => {
+        Some(Content::Redirect(uri)) => {
             let mut headers = route.headers.clone();
             headers.insert("Location".to_owned(), uri.clone().into_bytes());
 
@@ -119,37 +148,58 @@ mod tests {
                 Route {
                     uri: "/exact".to_string(),
                     matcher: UriMatcher::Exact,
-                    content: Content::NoContent,
+                    content: Some(Content::NoContent),
                     status: Some(201),
                     headers: HashMap::new(),
                 },
                 Route {
                     uri: "^/e.*t$".to_string(),
                     matcher: UriMatcher::Regex,
-                    content: Content::NoContent,
+                    content: Some(Content::NoContent),
                     status: Some(202),
                     headers: HashMap::new(),
                 },
                 Route {
                     uri: "/exa".to_string(),
                     matcher: UriMatcher::PrefixPrioritiesed,
-                    content: Content::NoContent,
+                    content: Some(Content::NoContent),
                     status: Some(203),
                     headers: HashMap::new(),
                 },
                 Route {
                     uri: "/ex".to_string(),
                     matcher: UriMatcher::Exact,
-                    content: Content::NoContent,
+                    content: Some(Content::NoContent),
                     status: Some(204),
                     headers: HashMap::new(),
                 },
             ]),
         };
 
-        assert_eq!(find_matching_route(&server, "/exact").unwrap().status.unwrap(), 201);
-        assert_eq!(find_matching_route(&server, "/exct").unwrap().status.unwrap(), 202);
-        assert_eq!(find_matching_route(&server, "/exat").unwrap().status.unwrap(), 203);
-        assert_eq!(find_matching_route(&server, "/ex").unwrap().status.unwrap(), 204);
+        assert_eq!(
+            find_matching_route(&server, "/exact")
+                .unwrap()
+                .status
+                .unwrap(),
+            201
+        );
+        assert_eq!(
+            find_matching_route(&server, "/exct")
+                .unwrap()
+                .status
+                .unwrap(),
+            202
+        );
+        assert_eq!(
+            find_matching_route(&server, "/exat")
+                .unwrap()
+                .status
+                .unwrap(),
+            203
+        );
+        assert_eq!(
+            find_matching_route(&server, "/ex").unwrap().status.unwrap(),
+            204
+        );
     }
 }

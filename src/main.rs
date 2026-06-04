@@ -54,7 +54,11 @@ async fn process_connection(
         };
 
     let mut writer = BufWriter::new(socket);
-    write_response(&mut writer, &construct_response(route)?).await?;
+    write_response(
+        &mut writer,
+        &construct_response(route, &request.start_line.uri.path)?,
+    )
+    .await?;
 
     Ok(())
 }
