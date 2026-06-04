@@ -1,14 +1,97 @@
 use std::fs::File;
-use std::io;
 use std::io::Read;
 use std::{cmp::max_by_key, fs};
+use std::{env, io};
 
 use regex::Regex;
+use thiserror::Error;
 
+use crate::parse::Request;
 use crate::{
     config::{Content, Route, Server, UriMatcher},
     respond::Response,
 };
+
+#[derive(Debug, Error)]
+pub enum VarError {
+    #[error("Unknow variable {0}")]
+    UnknownVar(String),
+}
+
+fn to_pascal_case(str: &str) -> String {
+    let mut result = String::new();
+    let mut prev_letter = false;
+    for c in str.chars() {
+        if c.is_ascii_lowercase() && !prev_letter {
+            result.push(c.to_ascii_uppercase());
+        } else if c == '_' {
+            result.push('-');
+        } else {
+            result.push(c);
+        }
+
+        prev_letter = c.is_ascii_alphabetic();
+    }
+    result
+}
+
+fn write_var(var: &str, output: &mut String, request: &Request) -> Result<(), VarError> {
+    if let Some(header) = var.strip_prefix("http_") {
+        let header = to_pascal_case(header);
+        if let Some(value) = request.headers.get(&header) {
+            output.push_str(value);
+            return Ok(());
+        }
+    }
+
+    if let Some(env) = var.strip_prefix("env_") {
+        let env = env.to_ascii_uppercase();
+        if let Ok(data) = env::var(env) {
+            output.push_str(&data);
+            return Ok(());
+        }
+    }
+
+    match var {
+        "uri" => output.push_str(&request.start_line.uri.full),
+        "host" => output.push_str(&request.start_line.uri.host),
+        "method" => output.push_str(&request.start_line.uri.host),
+        _ => return Err(VarError::UnknownVar(var.to_owned())),
+    }
+    Ok(())
+}
+
+fn replace_vars(str: &str, request: &Request) -> Result<String, VarError> {
+    let mut result = String::new();
+
+    let mut is_var = false;
+    let mut last_var = String::new();
+
+    for (_, c) in str.chars().enumerate() {
+        if !is_var {
+            if c == '$' {
+                is_var = true;
+            } else {
+                result.push(c);
+            }
+        } else {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                last_var.push(c);
+            } else {
+                write_var(&last_var, &mut result, request)?;
+
+                is_var = false;
+                last_var.clear();
+            }
+        }
+    }
+
+    if is_var {
+        write_var(&last_var, &mut result, request)?;
+    }
+
+    Ok(result)
+}
 
 pub fn find_matching_route<'a>(server: &'a Server, path: &str) -> Option<&'a Route> {
     let mut prioritised = None::<&Route>;
@@ -61,54 +144,72 @@ fn read_file(path: &str) -> Result<Vec<u8>, io::Error> {
     return Ok(result);
 }
 
-pub fn construct_response(route: &Route, request_path: &str) -> Result<Response, io::Error> {
+#[derive(Debug, Error)]
+pub enum ResponseError {
+    #[error("Io error: {0}")]
+    IoError(io::Error),
+    #[error("Variable error: {0}")]
+    VarError(VarError),
+}
+
+pub fn construct_response(route: &Route, request: &Request) -> Result<Response, ResponseError> {
+    let mut headers = route
+        .headers
+        .iter()
+        .map(|(k, v)| Ok((k.clone(), replace_vars(v, request)?)))
+        .collect::<Result<_, _>>()
+        .map_err(ResponseError::VarError)?;
+
     Ok(match &route.content {
         None => match route.status {
             Some(200) | None => {
-                let path = request_path.strip_prefix('/').unwrap_or(request_path);
-                if fs::exists(path)? {
+                let path = &request.start_line.uri.path;
+                let path = path.strip_prefix('/').unwrap_or(path);
+
+                if fs::exists(path).map_err(ResponseError::IoError)? {
                     Response {
                         status: 200,
-                        headers: route.headers.clone(),
-                        body: read_file(path)?,
+                        headers: headers,
+                        body: read_file(path).map_err(ResponseError::IoError)?,
                     }
                 } else if route.status.is_some() {
                     Response {
                         status: 200,
-                        headers: route.headers.clone(),
+                        headers: headers,
                         body: Vec::new(),
                     }
                 } else {
                     Response {
                         status: 404,
-                        headers: route.headers.clone(),
+                        headers: headers,
                         body: Vec::new(),
                     }
                 }
             }
             Some(status) => Response {
                 status,
-                headers: route.headers.clone(),
+                headers: headers,
                 body: Vec::new(),
             },
         },
         Some(Content::NoContent) => Response {
             status: route.status.unwrap_or(200),
-            headers: route.headers.clone(),
+            headers: headers,
             body: Vec::new(),
         },
         Some(Content::FileAny(files)) => {
             let mut body = Vec::new();
             for file in files {
-                if file.exists() {
-                    body = read_file("index.html")?;
+                let file = replace_vars(&file, request).map_err(ResponseError::VarError)?;
+
+                if fs::exists(&file).map_err(ResponseError::IoError)? {
+                    body = read_file(&file).map_err(ResponseError::IoError)?;
                 }
             }
 
-            let mut headers = route.headers.clone();
             headers.insert(
                 "Content-Length".to_owned(),
-                itoa::Buffer::new().format(body.len()).as_bytes().to_vec(),
+                itoa::Buffer::new().format(body.len()).to_owned(),
             );
 
             Response {
@@ -118,8 +219,8 @@ pub fn construct_response(route: &Route, request_path: &str) -> Result<Response,
             }
         }
         Some(Content::Redirect(uri)) => {
-            let mut headers = route.headers.clone();
-            headers.insert("Location".to_owned(), uri.clone().into_bytes());
+            let uri = replace_vars(&uri, request).map_err(ResponseError::VarError)?;
+            headers.insert("Location".to_owned(), uri.clone());
 
             Response {
                 status: route.status.unwrap_or(308),

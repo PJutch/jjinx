@@ -25,7 +25,7 @@ fn get_host(request: &Request) -> Result<&str, Utf8Error> {
     if !request.start_line.uri.host.is_empty() {
         Ok(&request.start_line.uri.host)
     } else {
-        let host_port = str::from_utf8(&request.headers["Host"])?;
+        let host_port = &request.headers["Host"];
         if let Some(host_end) = host_port.find(':') {
             Ok(&host_port[..host_end])
         } else {
@@ -54,11 +54,7 @@ async fn process_connection(
         };
 
     let mut writer = BufWriter::new(socket);
-    write_response(
-        &mut writer,
-        &construct_response(route, &request.start_line.uri.path)?,
-    )
-    .await?;
+    write_response(&mut writer, &construct_response(route, &request)?).await?;
 
     Ok(())
 }

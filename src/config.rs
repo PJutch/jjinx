@@ -3,7 +3,6 @@ use std::{
     io::{self, BufRead},
     net::{AddrParseError, Ipv4Addr},
     num::ParseIntError,
-    path::PathBuf,
     string::FromUtf8Error,
 };
 
@@ -13,7 +12,7 @@ use thiserror::Error;
 pub enum Content {
     #[default]
     NoContent,
-    FileAny(Vec<PathBuf>),
+    FileAny(Vec<String>),
     Redirect(String),
 }
 
@@ -32,7 +31,7 @@ pub struct Route {
     pub matcher: UriMatcher,
     pub content: Option<Content>,
     pub status: Option<i16>,
-    pub headers: HashMap<String, Vec<u8>>,
+    pub headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -257,7 +256,7 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
                 let header_value = next_token(reader)?;
                 consume_fixed(reader, "\n")?;
 
-                route.headers.insert(header_name, header_value.into_bytes());
+                route.headers.insert(header_name, header_value);
             }
             "\n" => {}
             "}" => break,

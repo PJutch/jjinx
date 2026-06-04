@@ -4,7 +4,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 pub struct Response {
     pub status: i16,
-    pub headers: HashMap<String, Vec<u8>>,
+    pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
 }
 
@@ -21,7 +21,7 @@ pub async fn write_response<Writer: AsyncWrite + Unpin>(
     for (field_name, field_value) in &response.headers {
         writer.write(field_name.as_bytes()).await?;
         writer.write(": ".as_bytes()).await?;
-        writer.write(&field_value).await?;
+        writer.write(field_value.as_bytes()).await?;
         writer.write("\r\n".as_bytes()).await?;
     }
 

@@ -400,7 +400,7 @@ async fn skip_whitespace<Reader: AsyncBufRead + Unpin>(
 
 async fn parse_headers<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
-) -> Result<HashMap<String, Vec<u8>>, ParseError> {
+) -> Result<HashMap<String, String>, ParseError> {
     let mut headers = HashMap::new();
     loop {
         let first_byte = peek_byte(reader).await?;
@@ -421,7 +421,10 @@ async fn parse_headers<Reader: AsyncBufRead + Unpin>(
             field_value.pop();
         }
 
-        headers.insert(field_name, field_value);
+        headers.insert(
+            field_name,
+            String::from_utf8(field_value).map_err(ParseError::Utf8Error)?,
+        );
         try_skip_newline(reader).await?;
     }
 }
@@ -452,7 +455,7 @@ async fn read_n_bytes<Reader: AsyncBufRead + Unpin>(
 #[derive(PartialEq, Debug)]
 pub struct Request {
     pub start_line: StartLine,
-    pub headers: HashMap<String, Vec<u8>>,
+    pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
 }
 
@@ -465,10 +468,7 @@ pub async fn parse_request<Reader: AsyncBufRead + Unpin>(
     try_skip_newline(reader).await?;
 
     let body = if let Some(data) = headers.get("Content-Length") {
-        let len = str::from_utf8(data)
-            .map_err(ParseError::Utf8ErrorSlice)?
-            .parse()
-            .map_err(ParseError::ParseIntError)?;
+        let len = data.parse().map_err(ParseError::ParseIntError)?;
         read_n_bytes(reader, len).await?
     } else if let Some(_) = headers.get("Transfer-Encoding") {
         todo!("Handle Transfer-Encoding");
@@ -585,8 +585,8 @@ mod tests {
         assert_eq!(
             headers,
             HashMap::from([
-                ("header1".to_owned(), "value1".as_bytes().to_owned()),
-                ("header2".to_owned(), "value2".as_bytes().to_owned()),
+                ("header1".to_owned(), "value1".to_owned()),
+                ("header2".to_owned(), "value2".to_owned()),
             ])
         );
         Ok(())
@@ -615,9 +615,9 @@ mod tests {
                     version: HttpVersion(1, 1)
                 },
                 headers: HashMap::from([
-                    ("header1".to_owned(), "value1".as_bytes().to_owned()),
-                    ("header2".to_owned(), "value2".as_bytes().to_owned()),
-                    ("Content-Length".to_owned(), "48".as_bytes().to_owned())
+                    ("header1".to_owned(), "value1".to_owned()),
+                    ("header2".to_owned(), "value2".to_owned()),
+                    ("Content-Length".to_owned(), "48".to_owned())
                 ]),
                 body: "<html><body>something</body></html>".as_bytes().to_owned()
             }
@@ -647,8 +647,8 @@ mod tests {
                     version: HttpVersion(1, 1)
                 },
                 headers: HashMap::from([
-                    ("header1".to_owned(), "value1".as_bytes().to_owned()),
-                    ("header2".to_owned(), "value2".as_bytes().to_owned()),
+                    ("header1".to_owned(), "value1".to_owned()),
+                    ("header2".to_owned(), "value2".to_owned()),
                 ]),
                 body: "".as_bytes().to_owned()
             }
