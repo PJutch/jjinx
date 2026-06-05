@@ -1,60 +1,16 @@
+use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::Read;
-use std::{cmp::max_by_key, fs};
 
-use regex::Regex;
 use thiserror::Error;
 
-use crate::config::{Content, Route, Server, UriMatcher};
-use crate::parse::Request;
-use crate::respond::Response;
+use tokio::io::{BufReader, BufWriter};
+use tokio::net::TcpStream;
+
+use crate::config::{Content, Route};
+use crate::http::{HttpVersion, ParseError, Request, Response, parse_response, write_request};
 use crate::vars::{VarError, replace_dynamic_vars};
-
-pub fn find_matching_route<'a>(server: &'a Server, path: &str) -> Option<&'a Route> {
-    let mut prioritised = None::<&Route>;
-    let mut regex = None::<&Route>;
-    let mut prefix = None::<&Route>;
-
-    for route in &server.routes {
-        match route.matcher {
-            UriMatcher::Prefix => {
-                if path.starts_with(&route.uri) {
-                    prefix = max_by_key(prefix, Some(route), |route| {
-                        route.map(|route| route.uri.len())
-                    })
-                }
-            }
-            UriMatcher::Regex => {
-                if Regex::new(&route.uri).unwrap().find(path).is_some() && regex.is_none() {
-                    regex = Some(route);
-                }
-            }
-            UriMatcher::PrefixPrioritiesed => {
-                if path.starts_with(&route.uri) {
-                    prioritised = max_by_key(prioritised, Some(route), |route| {
-                        route.map(|route| route.uri.len())
-                    })
-                }
-            }
-            UriMatcher::Exact => {
-                if path == route.uri {
-                    prioritised = max_by_key(prioritised, Some(route), |route| {
-                        route.map(|route| route.uri.len())
-                    })
-                }
-            }
-        }
-    }
-
-    if prioritised.is_some() {
-        return prioritised;
-    } else if regex.is_some() {
-        return regex;
-    } else {
-        return prefix;
-    }
-}
 
 fn read_file(path: &str) -> Result<Vec<u8>, io::Error> {
     let mut result = Vec::new();
@@ -68,13 +24,23 @@ pub enum ResponseError {
     IoError(io::Error),
     #[error("Variable error: {0}")]
     VarError(VarError),
+    #[error("Parse response error: {0}")]
+    ParseResponseError(ParseError),
 }
 
-pub fn construct_response(route: &Route, request: &Request) -> Result<Response, ResponseError> {
+pub async fn construct_response(
+    route: &Route,
+    request: &Request,
+) -> Result<Response, ResponseError> {
     let mut headers = route
         .headers
         .iter()
-        .map(|(k, v)| Ok((k.clone(), replace_dynamic_vars(v, request)?)))
+        .map(|(k, v)| {
+            Ok((
+                replace_dynamic_vars(k, request)?,
+                replace_dynamic_vars(v, request)?,
+            ))
+        })
         .collect::<Result<_, _>>()
         .map_err(ResponseError::VarError)?;
 
@@ -149,79 +115,48 @@ pub fn construct_response(route: &Route, request: &Request) -> Result<Response, 
                 body: Vec::new(),
             }
         }
+        Some(Content::Proxy {
+            uri,
+            headers: proxy_headers,
+        }) => {
+            let uri = replace_dynamic_vars(&uri, request).map_err(ResponseError::VarError)?;
+
+            let mut proxy_request = request.clone();
+            proxy_request.start_line.version = HttpVersion(1, 1);
+
+            if !proxy_request.start_line.uri.host.is_empty() {
+                proxy_request.headers.insert(
+                    "Host".to_string(),
+                    proxy_request.start_line.uri.host.clone(),
+                );
+            }
+
+            for (header_name, header_value) in proxy_headers {
+                let header_name =
+                    replace_dynamic_vars(header_name, &request).map_err(ResponseError::VarError)?;
+                let header_value = replace_dynamic_vars(header_value, &request)
+                    .map_err(ResponseError::VarError)?;
+
+                proxy_request.headers.insert(header_name, header_value);
+            }
+
+            let mut stream = TcpStream::connect(uri)
+                .await
+                .map_err(ResponseError::IoError)?;
+
+            write_request(&mut BufWriter::new(&mut stream), &proxy_request)
+                .await
+                .map_err(ResponseError::IoError)?;
+
+            let mut response = parse_response(&mut BufReader::new(&mut stream))
+                .await
+                .map_err(ResponseError::ParseResponseError)?;
+
+            for (header_name, header_value) in headers {
+                response.headers.insert(header_name, header_value);
+            }
+
+            response
+        }
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use crate::config::{Content, Route, Server, UriMatcher};
-    use crate::process::find_matching_route;
-
-    #[test]
-    fn test_find_matching_route() {
-        let server = Server {
-            ip: None,
-            port: Some(8080),
-            domain_names: Vec::new(),
-            is_default: true,
-            routes: Vec::from([
-                Route {
-                    uri: "/exact".to_string(),
-                    matcher: UriMatcher::Exact,
-                    content: Some(Content::NoContent),
-                    status: Some(201),
-                    headers: HashMap::new(),
-                },
-                Route {
-                    uri: "^/e.*t$".to_string(),
-                    matcher: UriMatcher::Regex,
-                    content: Some(Content::NoContent),
-                    status: Some(202),
-                    headers: HashMap::new(),
-                },
-                Route {
-                    uri: "/exa".to_string(),
-                    matcher: UriMatcher::PrefixPrioritiesed,
-                    content: Some(Content::NoContent),
-                    status: Some(203),
-                    headers: HashMap::new(),
-                },
-                Route {
-                    uri: "/ex".to_string(),
-                    matcher: UriMatcher::Exact,
-                    content: Some(Content::NoContent),
-                    status: Some(204),
-                    headers: HashMap::new(),
-                },
-            ]),
-        };
-
-        assert_eq!(
-            find_matching_route(&server, "/exact")
-                .unwrap()
-                .status
-                .unwrap(),
-            201
-        );
-        assert_eq!(
-            find_matching_route(&server, "/exct")
-                .unwrap()
-                .status
-                .unwrap(),
-            202
-        );
-        assert_eq!(
-            find_matching_route(&server, "/exat")
-                .unwrap()
-                .status
-                .unwrap(),
-            203
-        );
-        assert_eq!(
-            find_matching_route(&server, "/ex").unwrap().status.unwrap(),
-            204
-        );
-    }
 }

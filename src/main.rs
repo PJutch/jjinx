@@ -8,18 +8,17 @@ use futures::future::join_all;
 use tokio::io::{BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 
-mod parse;
-use parse::Request;
-use parse::parse_request;
-
-mod respond;
-use respond::write_response;
+mod http;
+use http::{Request, parse_request, write_response};
 
 mod config;
 use config::{Server, parse_config};
 
 mod process;
-use process::{construct_response, find_matching_route};
+use process::construct_response;
+
+mod route_matching;
+use route_matching::find_matching_route;
 
 mod vars;
 
@@ -56,7 +55,7 @@ async fn process_connection(
         };
 
     let mut writer = BufWriter::new(socket);
-    write_response(&mut writer, &construct_response(route, &request)?).await?;
+    write_response(&mut writer, &construct_response(route, &request).await?).await?;
 
     Ok(())
 }

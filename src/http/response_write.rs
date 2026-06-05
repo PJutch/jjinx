@@ -1,12 +1,7 @@
-use std::{collections::HashMap, io};
+use std::io;
+use super::Response;
 
 use tokio::io::{AsyncWrite, AsyncWriteExt};
-
-pub struct Response {
-    pub status: i16,
-    pub headers: HashMap<String, String>,
-    pub body: Vec<u8>,
-}
 
 pub async fn write_response<Writer: AsyncWrite + Unpin>(
     writer: &mut Writer,

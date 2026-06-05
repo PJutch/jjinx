@@ -15,6 +15,10 @@ pub enum Content {
     RawData(String),
     FileAny(Vec<String>),
     Redirect(String),
+    Proxy {
+        uri: String,
+        headers: HashMap<String, String>,
+    },
 }
 
 #[derive(Debug, Default, PartialEq)]

@@ -113,6 +113,49 @@ fn parse_route<Reader: BufRead>(
                     return Err(ParseError::DuplicateContent(route.uri));
                 }
             }
+            "proxy" => {
+                let uri =
+                    replace_static_vars(&next_token(reader)?, &[&vars, server_vars, global_vars])
+                        .unwrap();
+                consume_fixed(reader, "\n")?;
+
+                match &mut route.content {
+                    None => {
+                        route.content = Some(Content::Proxy {
+                            uri,
+                            headers: HashMap::new(),
+                        });
+                    }
+                    Some(Content::Proxy {
+                        uri: current_uri, ..
+                    }) if current_uri.is_empty() => {
+                        *current_uri = uri;
+                    }
+                    Some(_) => return Err(ParseError::DuplicateContent(route.uri)),
+                }
+            }
+            "proxy_header" => {
+                let header_name =
+                    replace_static_vars(&next_token(reader)?, &[&vars, server_vars, global_vars])
+                        .unwrap();
+                let header_value =
+                    replace_static_vars(&next_token(reader)?, &[&vars, server_vars, global_vars])
+                        .unwrap();
+                consume_fixed(reader, "\n")?;
+
+                match &mut route.content {
+                    None => {
+                        route.content = Some(Content::Proxy {
+                            uri: "".to_owned(),
+                            headers: HashMap::from([(header_name, header_value)]),
+                        })
+                    }
+                    Some(Content::Proxy { headers, .. }) => {
+                        headers.insert(header_name, header_value);
+                    }
+                    Some(_) => return Err(ParseError::DuplicateContent(route.uri)),
+                }
+            }
             "header" => {
                 let header_name =
                     replace_static_vars(&next_token(reader)?, &[&vars, server_vars, global_vars])
@@ -262,6 +305,11 @@ mod tests {
                 route /test {
                     body \"test test test\"
                 }
+
+                route /proxy {
+                    proxy http://example.com
+                    proxy_header Host $host
+                }
             }
 
             # a comment
@@ -320,6 +368,16 @@ mod tests {
                             uri: "/test".to_owned(),
                             matcher: UriMatcher::Prefix,
                             content: Some(Content::RawData("test test test".to_owned())),
+                            status: None,
+                            headers: HashMap::new(),
+                        },
+                        Route {
+                            uri: "/proxy".to_owned(),
+                            matcher: UriMatcher::Prefix,
+                            content: Some(Content::Proxy {
+                                uri: "http://example.com".to_owned(),
+                                headers: HashMap::from([("Host".to_owned(), "$host".to_owned())])
+                            }),
                             status: None,
                             headers: HashMap::new(),
                         }
