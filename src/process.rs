@@ -80,21 +80,22 @@ fn replace_vars(str: &str, request: &Request) -> Result<String, VarError> {
     let mut last_var = String::new();
 
     for (_, c) in str.chars().enumerate() {
-        if !is_var {
-            if c == '$' {
-                is_var = true;
-            } else {
-                result.push(c);
-            }
-        } else {
+        if is_var {
             if c.is_ascii_alphanumeric() || c == '_' {
                 last_var.push(c);
+                continue;
             } else {
                 write_var(&last_var, &mut result, request)?;
 
                 is_var = false;
                 last_var.clear();
             }
+        }
+
+        if c == '$' {
+            is_var = true;
+        } else {
+            result.push(c);
         }
     }
 

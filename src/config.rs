@@ -1,4 +1,5 @@
 use std::{
+    ascii::escape_default,
     collections::HashMap,
     io::{self, BufRead},
     net::{AddrParseError, Ipv4Addr},
@@ -66,6 +67,8 @@ pub enum ParseError {
     DuplicateContent(String),
     #[error("Unknown matcher: {0}")]
     UnknownMatcher(String),
+    #[error("Unknow escape sequence: \\{0}")]
+    UnknownEscape(String),
 }
 
 fn skip_whitespace<Reader: BufRead>(reader: &mut Reader) -> Result<(), ParseError> {
@@ -92,6 +95,7 @@ enum TokenizerMode {
     NORMAL,
     QUOTED,
     COMMENT,
+    ESCAPE,
 }
 
 fn next_token<Reader: BufRead>(reader: &mut Reader) -> Result<String, ParseError> {
@@ -107,44 +111,82 @@ fn next_token<Reader: BufRead>(reader: &mut Reader) -> Result<String, ParseError
         }
 
         for (i, c) in buf.iter().copied().enumerate() {
-            if mode == TokenizerMode::QUOTED {
-                if c == '"' as u8 {
-                    reader.consume(i + 1);
-                    break 'fill_buf;
-                } else {
-                    token.push(c);
+            match mode {
+                TokenizerMode::ESCAPE => {
+                    match c {
+                        b'n' => {
+                            token.push(b'\n');
+                        }
+                        b'r' => {
+                            token.push(b'\r');
+                        }
+                        b't' => {
+                            token.push(b'\t');
+                        }
+                        b'\\' => {
+                            token.push(b'\\');
+                        }
+                        b'"' => {
+                            token.push(b'"');
+                        }
+                        _ => {
+                            return Err(ParseError::UnknownEscape(escape_default(c).to_string()));
+                        }
+                    }
+                    mode = TokenizerMode::QUOTED;
                 }
-            } else if mode == TokenizerMode::COMMENT {
-                if c == '\n' as u8 {
-                    if token.is_empty() {
+                TokenizerMode::QUOTED => match c {
+                    b'"' => {
+                        reader.consume(i + 1);
+                        break 'fill_buf;
+                    }
+                    b'\\' => {
+                        mode = TokenizerMode::ESCAPE;
+                    }
+                    _ => {
+                        token.push(c);
+                    }
+                },
+                TokenizerMode::COMMENT => {
+                    if c == '\n' as u8 {
+                        if token.is_empty() {
+                            token.push(c);
+                            reader.consume(i + 1);
+                        } else {
+                            reader.consume(i);
+                        }
+                        break 'fill_buf;
+                    }
+                }
+                TokenizerMode::NORMAL => match c {
+                    b'#' => {
+                        mode = TokenizerMode::COMMENT;
+                    }
+                    b'"' => {
+                        if token.is_empty() {
+                            mode = TokenizerMode::QUOTED;
+                        } else {
+                            reader.consume(i);
+                            break 'fill_buf;
+                        }
+                    }
+                    b'\n' if token.is_empty() => {
                         token.push(c);
                         reader.consume(i + 1);
-                    } else {
-                        reader.consume(i);
+                        break 'fill_buf;
                     }
-                    break 'fill_buf;
-                }
-            } else {
-                if c == '#' as u8 {
-                    mode = TokenizerMode::COMMENT;
-                } else if c == '"' as u8 && token.is_empty() {
-                    mode = TokenizerMode::QUOTED;
-                } else if c == '"' as u8 && !token.is_empty() {
-                    reader.consume(i);
-                    break 'fill_buf;
-                } else if c == '\n' as u8 && token.is_empty() {
-                    token.push(c);
-                    reader.consume(i + 1);
-                    break 'fill_buf;
-                } else if c.is_ascii_whitespace() {
-                    reader.consume(i);
-                    break 'fill_buf;
-                } else if c == '}' as u8 && !token.is_empty() {
-                    reader.consume(i);
-                    break 'fill_buf;
-                } else {
-                    token.push(c);
-                }
+                    _ if c.is_ascii_whitespace() => {
+                        reader.consume(i);
+                        break 'fill_buf;
+                    }
+                    b'}' if !token.is_empty() => {
+                        reader.consume(i);
+                        break 'fill_buf;
+                    }
+                    _ => {
+                        token.push(c);
+                    }
+                },
             }
         }
 
