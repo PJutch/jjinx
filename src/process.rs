@@ -54,7 +54,19 @@ fn write_var(var: &str, output: &mut String, request: &Request) -> Result<(), Va
 
     match var {
         "uri" => output.push_str(&request.start_line.uri.full),
-        "host" => output.push_str(&request.start_line.uri.host),
+        "host" => {
+            if request.start_line.uri.host.is_empty() {
+                output.push_str(
+                    &request
+                        .headers
+                        .get("Host")
+                        .map(|s| s.as_str())
+                        .unwrap_or(""),
+                );
+            } else {
+                output.push_str(&request.start_line.uri.host)
+            }
+        }
         "method" => output.push_str(&request.start_line.uri.host),
         _ => return Err(VarError::UnknownVar(var.to_owned())),
     }
@@ -200,7 +212,10 @@ pub fn construct_response(route: &Route, request: &Request) -> Result<Response, 
         Some(Content::RawData(data)) => Response {
             status: route.status.unwrap_or(200),
             headers: headers,
-            body: data.as_bytes().to_owned(),
+            body: replace_vars(data, request)
+                .map_err(ResponseError::VarError)?
+                .as_bytes()
+                .to_owned(),
         },
         Some(Content::FileAny(files)) => {
             let mut body = Vec::new();
