@@ -1,5 +1,5 @@
 use crate::parse::Request;
-use std::env;
+use std::{collections::HashMap, convert::Infallible, env};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -25,7 +25,7 @@ fn to_pascal_case(str: &str) -> String {
     result
 }
 
-fn write_var(var: &str, output: &mut String, request: &Request) -> Result<(), VarError> {
+fn dynamic_replacer(var: &str, output: &mut String, request: &Request) -> Result<(), VarError> {
     if let Some(header) = var.strip_prefix("http_") {
         let header = to_pascal_case(header);
         if let Some(value) = request.headers.get(&header) {
@@ -63,7 +63,10 @@ fn write_var(var: &str, output: &mut String, request: &Request) -> Result<(), Va
     Ok(())
 }
 
-pub fn replace_vars(str: &str, request: &Request) -> Result<String, VarError> {
+fn replace_vars<Err, F: Fn(&str, &mut String) -> Result<(), Err>>(
+    str: &str,
+    replacer: F,
+) -> Result<String, Err> {
     let mut result = String::new();
 
     let mut is_var = false;
@@ -75,7 +78,7 @@ pub fn replace_vars(str: &str, request: &Request) -> Result<String, VarError> {
                 last_var.push(c);
                 continue;
             } else {
-                write_var(&last_var, &mut result, request)?;
+                replacer(&last_var, &mut result)?;
 
                 is_var = false;
                 last_var.clear();
@@ -90,8 +93,36 @@ pub fn replace_vars(str: &str, request: &Request) -> Result<String, VarError> {
     }
 
     if is_var {
-        write_var(&last_var, &mut result, request)?;
+        replacer(&last_var, &mut result)?;
     }
 
     Ok(result)
+}
+
+pub fn replace_dynamic_vars(str: &str, request: &Request) -> Result<String, VarError> {
+    replace_vars(str, |var, output| dynamic_replacer(var, output, request))
+}
+
+fn static_replacer(
+    var: &str,
+    output: &mut String,
+    vars: &[&HashMap<String, String>],
+) -> Result<(), Infallible> {
+    for var_set in vars {
+        if let Some(value) = var_set.get(var) {
+            output.push_str(value);
+            return Ok(());
+        }
+    }
+
+    output.push('$');
+    output.push_str(var);
+    Ok(())
+}
+
+pub fn replace_static_vars(
+    str: &str,
+    vars: &[&HashMap<String, String>],
+) -> Result<String, Infallible> {
+    replace_vars(str, |var, output| static_replacer(var, output, vars))
 }

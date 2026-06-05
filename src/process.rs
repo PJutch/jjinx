@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::config::{Content, Route, Server, UriMatcher};
 use crate::parse::Request;
 use crate::respond::Response;
-use crate::vars::{VarError, replace_vars};
+use crate::vars::{VarError, replace_dynamic_vars};
 
 pub fn find_matching_route<'a>(server: &'a Server, path: &str) -> Option<&'a Route> {
     let mut prioritised = None::<&Route>;
@@ -74,7 +74,7 @@ pub fn construct_response(route: &Route, request: &Request) -> Result<Response, 
     let mut headers = route
         .headers
         .iter()
-        .map(|(k, v)| Ok((k.clone(), replace_vars(v, request)?)))
+        .map(|(k, v)| Ok((k.clone(), replace_dynamic_vars(v, request)?)))
         .collect::<Result<_, _>>()
         .map_err(ResponseError::VarError)?;
 
@@ -118,7 +118,7 @@ pub fn construct_response(route: &Route, request: &Request) -> Result<Response, 
         Some(Content::RawData(data)) => Response {
             status: route.status.unwrap_or(200),
             headers: headers,
-            body: replace_vars(data, request)
+            body: replace_dynamic_vars(data, request)
                 .map_err(ResponseError::VarError)?
                 .as_bytes()
                 .to_owned(),
@@ -126,7 +126,7 @@ pub fn construct_response(route: &Route, request: &Request) -> Result<Response, 
         Some(Content::FileAny(files)) => {
             let mut body = Vec::new();
             for file in files {
-                let file = replace_vars(&file, request).map_err(ResponseError::VarError)?;
+                let file = replace_dynamic_vars(&file, request).map_err(ResponseError::VarError)?;
 
                 if fs::exists(&file).map_err(ResponseError::IoError)? {
                     body = read_file(&file).map_err(ResponseError::IoError)?;
@@ -140,7 +140,7 @@ pub fn construct_response(route: &Route, request: &Request) -> Result<Response, 
             }
         }
         Some(Content::Redirect(uri)) => {
-            let uri = replace_vars(&uri, request).map_err(ResponseError::VarError)?;
+            let uri = replace_dynamic_vars(&uri, request).map_err(ResponseError::VarError)?;
             headers.insert("Location".to_owned(), uri.clone());
 
             Response {

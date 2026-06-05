@@ -9,6 +9,8 @@ use std::{
 
 use thiserror::Error;
 
+use crate::vars::replace_static_vars;
+
 #[derive(Debug, Default, PartialEq)]
 pub enum Content {
     #[default]
@@ -220,11 +222,26 @@ fn read_tokens_until_newline<Reader: BufRead>(
     Ok(result)
 }
 
-fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError> {
+fn parse_set<Reader: BufRead>(
+    reader: &mut Reader,
+    vars: &[&HashMap<String, String>],
+) -> Result<(String, String), ParseError> {
+    let var = replace_static_vars(&next_token(reader)?, vars).unwrap();
+    let value = replace_static_vars(&next_token(reader)?, vars).unwrap();
+    consume_fixed(reader, "\n")?;
+
+    Ok((var, value))
+}
+
+fn parse_route<Reader: BufRead>(
+    reader: &mut Reader,
+    global_vars: &HashMap<String, String>,
+    server_vars: &HashMap<String, String>,
+) -> Result<Route, ParseError> {
     let mut route = Route::default();
 
-    let token1 = next_token(reader)?;
-    let token2 = next_token(reader)?;
+    let token1 = replace_static_vars(&next_token(reader)?, &[server_vars, global_vars]).unwrap();
+    let token2 = replace_static_vars(&next_token(reader)?, &[server_vars, global_vars]).unwrap();
 
     if token2 == "{" {
         route.uri = token1;
@@ -246,13 +263,17 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
         consume_fixed(reader, "{")?;
     }
 
+    let mut vars = HashMap::new();
+
     loop {
         let token = next_token(reader)?;
         match token.as_str() {
             "status" => {
-                let status = next_token(reader)?
-                    .parse()
-                    .map_err(ParseError::ParseIntError)?;
+                let status =
+                    replace_static_vars(&next_token(reader)?, &[&vars, server_vars, global_vars])
+                        .unwrap()
+                        .parse()
+                        .map_err(ParseError::ParseIntError)?;
 
                 consume_fixed(reader, "\n")?;
 
@@ -270,7 +291,9 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
                 }
             }
             "body" => {
-                let body = next_token(reader)?;
+                let body =
+                    replace_static_vars(&next_token(reader)?, &[&vars, server_vars, global_vars])
+                        .unwrap();
                 consume_fixed(reader, "\n")?;
 
                 if route.content.is_none() {
@@ -282,7 +305,9 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
             "file" => {
                 let mut paths = read_tokens_until_newline(reader)?
                     .iter()
-                    .map(|path| path.into())
+                    .map(|path| {
+                        replace_static_vars(path, &[&vars, server_vars, global_vars]).unwrap()
+                    })
                     .collect();
 
                 match route.content {
@@ -295,7 +320,9 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
                 }
             }
             "redirect" => {
-                let uri = next_token(reader)?;
+                let uri =
+                    replace_static_vars(&next_token(reader)?, &[&vars, server_vars, global_vars])
+                        .unwrap();
                 consume_fixed(reader, "\n")?;
 
                 if route.content.is_none() {
@@ -305,11 +332,19 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
                 }
             }
             "header" => {
-                let header_name = next_token(reader)?;
-                let header_value = next_token(reader)?;
+                let header_name =
+                    replace_static_vars(&next_token(reader)?, &[&vars, server_vars, global_vars])
+                        .unwrap();
+                let header_value =
+                    replace_static_vars(&next_token(reader)?, &[&vars, server_vars, global_vars])
+                        .unwrap();
                 consume_fixed(reader, "\n")?;
 
                 route.headers.insert(header_name, header_value);
+            }
+            "set" => {
+                let (var, value) = parse_set(reader, &[&vars, server_vars, global_vars])?;
+                vars.insert(var, value);
             }
             "\n" => {}
             "}" => break,
@@ -320,15 +355,21 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
     Ok(route)
 }
 
-fn parse_server_config<Reader: BufRead>(reader: &mut Reader) -> Result<Server, ParseError> {
+fn parse_server_config<Reader: BufRead>(
+    reader: &mut Reader,
+    global_vars: &HashMap<String, String>,
+) -> Result<Server, ParseError> {
     consume_fixed(reader, "{")?;
 
     let mut server = Server::default();
+    let mut vars = HashMap::new();
+
     loop {
         let token = next_token(reader)?;
         match token.as_str() {
             "port" => {
-                let port = next_token(reader)?
+                let port = replace_static_vars(&next_token(reader)?, &[&vars, global_vars])
+                    .unwrap()
                     .parse()
                     .map_err(ParseError::ParseIntError)?;
 
@@ -341,7 +382,8 @@ fn parse_server_config<Reader: BufRead>(reader: &mut Reader) -> Result<Server, P
                 }
             }
             "ip" => {
-                let ip = next_token(reader)?
+                let ip = replace_static_vars(&next_token(reader)?, &[&vars, global_vars])
+                    .unwrap()
                     .as_str()
                     .parse()
                     .map_err(ParseError::AddrParseError)?;
@@ -368,8 +410,12 @@ fn parse_server_config<Reader: BufRead>(reader: &mut Reader) -> Result<Server, P
                 }
             }
             "route" => {
-                server.routes.push(parse_route(reader)?);
+                server.routes.push(parse_route(reader, global_vars, &vars)?);
                 consume_fixed(reader, "\n")?;
+            }
+            "set" => {
+                let (var, value) = parse_set(reader, &[&vars, global_vars])?;
+                vars.insert(var, value);
             }
             "\n" => {}
             "}" => break,
@@ -382,11 +428,16 @@ fn parse_server_config<Reader: BufRead>(reader: &mut Reader) -> Result<Server, P
 
 pub fn parse_config<Reader: BufRead>(reader: &mut Reader) -> Result<Vec<Server>, ParseError> {
     let mut servers = Vec::new();
+    let mut vars = HashMap::new();
 
     loop {
         let token = next_token(reader)?;
         match token.as_str() {
-            "server" => servers.push(parse_server_config(reader)?),
+            "server" => servers.push(parse_server_config(reader, &vars)?),
+            "set" => {
+                let (var, value) = parse_set(reader, &[&vars])?;
+                vars.insert(var, value);
+            }
             "\n" => {}
             "" => break,
             _ => return Err(ParseError::UnknownField(token)),
@@ -405,17 +456,23 @@ mod tests {
     #[test]
     fn parse_config() -> Result<(), config::ParseError> {
         let mut reader = Cursor::new(indoc! {"
+            set port 8080
+
             server {
-                port 8080
+                port $port
                 default
 
+                set index_uri /index.html
+
                 route / {
-                    redirect /index.html
+                    redirect $index_uri
                 }
 
-                route /index.html {
+                route $index_uri {
                     file /index.html /index.htm \"/has a space.html\"
-                    header Content-Type text/html
+
+                    set type text/html
+                    header Content-Type $type
                 }
 
                 route /images/ {}
@@ -428,7 +485,7 @@ mod tests {
             # a comment
 
             server {
-                port 8080
+                port $port
                 ip 127.0.0.1
                 domain example.com
                 domain www.example.com
