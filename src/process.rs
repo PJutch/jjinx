@@ -212,11 +212,6 @@ pub fn construct_response(route: &Route, request: &Request) -> Result<Response, 
                 }
             }
 
-            headers.insert(
-                "Content-Length".to_owned(),
-                itoa::Buffer::new().format(body.len()).to_owned(),
-            );
-
             Response {
                 status: route.status.unwrap_or(200),
                 headers: headers,

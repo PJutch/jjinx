@@ -25,6 +25,14 @@ pub async fn write_response<Writer: AsyncWrite + Unpin>(
         writer.write("\r\n".as_bytes()).await?;
     }
 
+    if !response.headers.contains_key("Content-Length") {
+        writer.write("Content-Length: ".as_bytes()).await?;
+        writer
+            .write(itoa::Buffer::new().format(response.body.len()).as_bytes())
+            .await?;
+        writer.write("\r\n".as_bytes()).await?;
+    }
+
     writer.write("\r\n".as_bytes()).await?;
     writer.write(&response.body).await?;
 
