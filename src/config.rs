@@ -79,7 +79,7 @@ fn skip_whitespace<Reader: BufRead>(reader: &mut Reader) -> Result<(), ParseErro
         }
 
         for (i, c) in buf.iter().copied().enumerate() {
-            if !c.is_ascii_whitespace() || c == '\n' as u8 {
+            if !c.is_ascii_whitespace() || c == b'\n' {
                 reader.consume(i);
                 return Ok(());
             }
@@ -148,7 +148,7 @@ fn next_token<Reader: BufRead>(reader: &mut Reader) -> Result<String, ParseError
                     }
                 },
                 TokenizerMode::COMMENT => {
-                    if c == '\n' as u8 {
+                    if c == b'\n' {
                         if token.is_empty() {
                             token.push(c);
                             reader.consume(i + 1);

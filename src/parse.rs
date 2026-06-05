@@ -59,7 +59,7 @@ async fn peek_byte<Reader: AsyncBufRead + Unpin>(
 async fn read_digit<Reader: AsyncBufRead + Unpin>(reader: &mut Reader) -> Result<u8, ParseError> {
     let c = read_byte(reader).await?;
     if c.is_ascii_digit() {
-        Ok(c - ('0' as u8))
+        Ok(c - b'0')
     } else {
         Err(ParseError::ExpectedDigit)
     }
@@ -111,7 +111,7 @@ async fn parse_http_version<Reader: AsyncBufRead + Unpin>(
 
     let digit1 = read_digit(reader).await?;
 
-    if read_byte(reader).await? != '.' as u8 {
+    if read_byte(reader).await? != b'.' {
         return Err(ParseError::InvalidVersion);
     }
 
@@ -125,7 +125,8 @@ fn is_tchar(c: u8) -> bool {
         || [
             '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~',
         ]
-        .contains(&(c as char))
+        .map(|c| c as u8)
+        .contains(&c)
 }
 
 async fn read_token<Reader: AsyncBufRead + Unpin>(
@@ -153,7 +154,8 @@ fn is_uri_path_char(c: u8) -> bool {
             '-', '.', '_', '~', ',', '[', ']', '!', '%', '$', '&', ':', '@', '\'', '(', ')', '*',
             '+', ',', ';', '=', '/',
         ]
-        .contains(&(c as char))
+        .map(|c| c as u8)
+        .contains(&c)
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -205,37 +207,33 @@ async fn read_until_inclusive<Reader: AsyncBufRead + Unpin, F: Fn(u8) -> bool>(
 
 fn hex_digit_to_i8(digit: u8) -> Result<u8, ParseError> {
     if digit.is_ascii_digit() {
-        Ok(digit - '0' as u8)
-    } else if 'a' as u8 <= digit && digit <= 'f' as u8 {
-        Ok(digit - 'a' as u8 + 10)
-    } else if 'A' as u8 <= digit && digit <= 'F' as u8 {
-        Ok(digit - 'A' as u8 + 10)
+        Ok(digit - b'0')
+    } else if b'a' <= digit && digit <= b'f' {
+        Ok(digit - b'a' + 10)
+    } else if b'A' <= digit && digit <= b'F' {
+        Ok(digit - b'A' + 10)
     } else {
         Err(ParseError::InvalidParcentEncodingDigit(digit))
     }
 }
 
 fn compress_last_component(path: &mut Vec<u8>, last_slash: &mut usize) {
-    if &path[*last_slash..] == "/.".as_bytes() || path == ".".as_bytes() {
+    if &path[*last_slash..] == b"/." || path == b"." {
         path.pop();
         path.pop();
-    } else if &path[*last_slash..] == "/..".as_bytes() {
+    } else if &path[*last_slash..] == b"/.." {
         for _ in 0..3 {
             path.pop();
         }
 
-        *last_slash = path
-            .iter()
-            .copied()
-            .rposition(|c| c == '/' as u8)
-            .unwrap_or(0);
+        *last_slash = path.iter().copied().rposition(|c| c == b'/').unwrap_or(0);
 
-        if &path[*last_slash..] != "/..".as_bytes() && path != "..".as_bytes() && !path.is_empty() {
+        if &path[*last_slash..] != b"/.." && path != b".." && !path.is_empty() {
             while path.len() > *last_slash {
                 path.pop();
             }
         } else {
-            for c in "/..".as_bytes().iter().copied() {
+            for c in "/..".bytes() {
                 path.push(c);
             }
         }
@@ -255,14 +253,14 @@ fn uri_decode(data: &[u8]) -> Result<String, ParseError> {
 
             percent_encoded_digits -= 1;
             if percent_encoded_digits == 0 {
-                if percent_encoded_digits != '/' as u8 {
+                if percent_encoded_digits != b'/' {
                     decoded.push(perecent_encoded_byte);
                     perecent_encoded_byte = 0;
                 }
             }
-        } else if c == '%' as u8 {
+        } else if c == b'%' {
             percent_encoded_digits = 2;
-        } else if c == '/' as u8 {
+        } else if c == b'/' {
             if last_slash + 1 == decoded.len() {
                 continue;
             } else {
@@ -289,25 +287,25 @@ async fn parse_uri<Reader: AsyncBufRead + Unpin>(reader: &mut Reader) -> Result<
     let mut path_start = 0;
     let mut host = String::new();
 
-    if peek_byte(reader).await? != Some('/' as u8) {
-        read_until_inclusive(reader, |c| c == ':' as u8, &mut uri).await?;
+    if peek_byte(reader).await? != Some(b'/') {
+        read_until_inclusive(reader, |c| c == b':', &mut uri).await?;
 
         path_start = uri.len();
-        if peek_byte(reader).await? == Some('/' as u8) {
-            uri.push('/' as u8);
+        if peek_byte(reader).await? == Some(b'/') {
+            uri.push(b'/');
             reader.consume(1);
 
-            if peek_byte(reader).await? == Some('/' as u8) {
-                uri.push('/' as u8);
+            if peek_byte(reader).await? == Some(b'/') {
+                uri.push(b'/');
                 reader.consume(1);
 
                 let host_start = uri.len();
-                read_until(reader, |c| c == '/' as u8 || c == ':' as u8, &mut uri).await?;
+                read_until(reader, |c| c == b'/' || c == b':', &mut uri).await?;
                 host = String::from_utf8(uri[host_start..].to_owned())
                     .map_err(ParseError::Utf8Error)?;
 
-                if peek_byte(reader).await? == Some(':' as u8) {
-                    read_until(reader, |c| c == '/' as u8, &mut uri).await?;
+                if peek_byte(reader).await? == Some(b':') {
+                    read_until(reader, |c| c == b'/', &mut uri).await?;
                 }
 
                 path_start = uri.len();
@@ -329,7 +327,7 @@ async fn parse_uri<Reader: AsyncBufRead + Unpin>(reader: &mut Reader) -> Result<
     }
     let path = uri_decode(&uri[path_start..])?;
 
-    read_until(reader, |c| c == ' ' as u8, &mut uri).await?;
+    read_until(reader, |c| c == b' ', &mut uri).await?;
     let full = String::from_utf8(uri.clone()).map_err(ParseError::Utf8Error)?;
 
     Ok(Uri { full, path, host })
@@ -346,12 +344,12 @@ async fn parse_start_line<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
 ) -> Result<StartLine, ParseError> {
     let method = read_token(reader).await?;
-    if read_byte(reader).await? != ' ' as u8 {
+    if read_byte(reader).await? != b' ' {
         return Err(ParseError::ExpectedSpace);
     }
 
     let uri = parse_uri(reader).await?;
-    if read_byte(reader).await? != ' ' as u8 {
+    if read_byte(reader).await? != b' ' {
         return Err(ParseError::ExpectedSpace);
     }
 
@@ -370,7 +368,7 @@ async fn try_skip_newline<Reader: AsyncBufRead + Unpin>(
     match peek_byte(reader).await? {
         Some(0xD) => {
             reader.consume(1);
-            if read_byte(reader).await? != '\n' as u8 {
+            if read_byte(reader).await? != b'\n' {
                 return Err(ParseError::ExpectedLineFeed);
             }
             Ok(true)
@@ -381,7 +379,7 @@ async fn try_skip_newline<Reader: AsyncBufRead + Unpin>(
 }
 
 fn is_whitespace(byte: u8) -> bool {
-    byte == ' ' as u8 || byte == '\t' as u8
+    byte == b' ' || byte == b'\t'
 }
 
 async fn skip_whitespace<Reader: AsyncBufRead + Unpin>(
@@ -402,19 +400,19 @@ async fn parse_headers<Reader: AsyncBufRead + Unpin>(
     let mut headers = HashMap::new();
     loop {
         let first_byte = peek_byte(reader).await?;
-        if first_byte == Some('\r' as u8) || first_byte == None {
+        if first_byte == Some(b'\r') || first_byte == None {
             return Ok(headers);
         }
 
         let field_name = read_token(reader).await?;
-        if read_byte(reader).await? != ':' as u8 {
+        if read_byte(reader).await? != b':' {
             return Err(ParseError::ExpectedColon);
         }
 
         skip_whitespace(reader).await?;
 
         let mut field_value = Vec::new();
-        read_until(reader, |c| c == '\r' as u8, &mut field_value).await?;
+        read_until(reader, |c| c == b'\r', &mut field_value).await?;
         while field_value.last().copied().is_some_and(is_whitespace) {
             field_value.pop();
         }
@@ -617,7 +615,7 @@ mod tests {
                     ("header2".to_owned(), "value2".to_owned()),
                     ("Content-Length".to_owned(), "48".to_owned())
                 ]),
-                body: "<html><body>something</body></html>".as_bytes().to_owned()
+                body: b"<html><body>something</body></html>".to_vec()
             }
         );
         Ok(())
@@ -648,7 +646,7 @@ mod tests {
                     ("header1".to_owned(), "value1".to_owned()),
                     ("header2".to_owned(), "value2".to_owned()),
                 ]),
-                body: "".as_bytes().to_owned()
+                body: b"".to_vec()
             }
         );
         Ok(())

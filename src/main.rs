@@ -21,6 +21,8 @@ use config::{Server, parse_config};
 mod process;
 use process::{construct_response, find_matching_route};
 
+mod vars;
+
 fn get_host(request: &Request) -> Result<&str, Utf8Error> {
     if !request.start_line.uri.host.is_empty() {
         Ok(&request.start_line.uri.host)
