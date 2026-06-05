@@ -12,6 +12,7 @@ use thiserror::Error;
 pub enum Content {
     #[default]
     NoContent,
+    RawData(String),
     FileAny(Vec<String>),
     Redirect(String),
 }
@@ -226,6 +227,16 @@ fn parse_route<Reader: BufRead>(reader: &mut Reader) -> Result<Route, ParseError
                     return Err(ParseError::DuplicateContent(route.uri));
                 }
             }
+            "body" => {
+                let body = next_token(reader)?;
+                consume_fixed(reader, "\n")?;
+
+                if route.content.is_none() {
+                    route.content = Some(Content::RawData(body));
+                } else {
+                    return Err(ParseError::DuplicateContent(route.uri));
+                }
+            }
             "file" => {
                 let mut paths = read_tokens_until_newline(reader)?
                     .iter()
@@ -366,6 +377,10 @@ mod tests {
                 }
 
                 route /images/ {}
+
+                route /test {
+                    body \"test test test\"
+                }
             }
 
             # a comment
@@ -419,6 +434,13 @@ mod tests {
                             content: None,
                             status: None,
                             headers: HashMap::new()
+                        },
+                        Route {
+                            uri: "/test".to_owned(),
+                            matcher: UriMatcher::Prefix,
+                            content: Some(Content::RawData("test test test".to_owned())),
+                            status: None,
+                            headers: HashMap::new(),
                         }
                     ]),
                 },

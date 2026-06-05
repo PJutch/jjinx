@@ -197,6 +197,11 @@ pub fn construct_response(route: &Route, request: &Request) -> Result<Response, 
             headers: headers,
             body: Vec::new(),
         },
+        Some(Content::RawData(data)) => Response {
+            status: route.status.unwrap_or(200),
+            headers: headers,
+            body: data.as_bytes().to_owned(),
+        },
         Some(Content::FileAny(files)) => {
             let mut body = Vec::new();
             for file in files {

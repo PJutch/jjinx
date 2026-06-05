@@ -1,6 +1,6 @@
 use std::io;
 use std::num::ParseIntError;
-use std::{collections::HashMap, str::Utf8Error, string::FromUtf8Error};
+use std::{collections::HashMap, string::FromUtf8Error};
 use thiserror::Error;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
@@ -12,8 +12,6 @@ pub enum ParseError {
     IoError(io::Error),
     #[error("Utf8 error: {0}")]
     Utf8Error(FromUtf8Error),
-    #[error("Utf8 error: {0}")]
-    Utf8ErrorSlice(Utf8Error),
     #[error("Expected a digit")]
     ExpectedDigit,
     #[error("Parse int error: {0}")]
