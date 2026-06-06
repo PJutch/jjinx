@@ -14,15 +14,17 @@ use http::{Request, parse_request, write_response};
 mod config;
 use config::{Server, parse_config};
 
+mod uri;
+
 mod process;
 use process::construct_response;
 
 mod route_matching;
 use route_matching::find_matching_route;
 
-mod vars;
+mod proxy;
 
-mod uri;
+mod vars;
 
 fn get_host(request: &Request) -> Result<&str, Utf8Error> {
     if !request.start_line.uri.host().is_empty() {

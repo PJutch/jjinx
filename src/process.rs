@@ -5,12 +5,11 @@ use std::io::Read;
 
 use thiserror::Error;
 
-use tokio::io::{BufReader, BufWriter};
-use tokio::net::TcpStream;
-
 use crate::config::{Content, Route};
-use crate::http::{HttpVersion, ParseError, Request, Response, parse_response, write_request};
-use crate::vars::{VarError, replace_dynamic_vars};
+use crate::http::{Request, Response};
+use crate::proxy::{ProxyError, proxy_pass};
+use crate::uri::{self, parse_uri};
+use crate::vars::{VarError, replace_dynamic_vars, replace_dynamic_vars_headers};
 
 fn read_file(path: &str) -> Result<Vec<u8>, io::Error> {
     let mut result = Vec::new();
@@ -24,25 +23,18 @@ pub enum ResponseError {
     IoError(io::Error),
     #[error("Variable error: {0}")]
     VarError(VarError),
-    #[error("Parse response error: {0}")]
-    ParseResponseError(ParseError),
+    #[error("Uri parse error: {0}")]
+    UriParseError(uri::ParseError),
+    #[error("Proxy error: {0}")]
+    ProxyError(ProxyError),
 }
 
 pub async fn construct_response(
     route: &Route,
     request: &Request,
 ) -> Result<Response, ResponseError> {
-    let mut headers = route
-        .headers
-        .iter()
-        .map(|(k, v)| {
-            Ok((
-                replace_dynamic_vars(k, request)?,
-                replace_dynamic_vars(v, request)?,
-            ))
-        })
-        .collect::<Result<_, _>>()
-        .map_err(ResponseError::VarError)?;
+    let mut headers =
+        replace_dynamic_vars_headers(&route.headers, request).map_err(ResponseError::VarError)?;
 
     Ok(match &route.content {
         None => match route.status {
@@ -120,37 +112,16 @@ pub async fn construct_response(
             headers: proxy_headers,
         }) => {
             let uri = replace_dynamic_vars(&uri, request).map_err(ResponseError::VarError)?;
+            let proxy_headers = replace_dynamic_vars_headers(&proxy_headers, request)
+                .map_err(ResponseError::VarError)?;
 
-            let mut proxy_request = request.clone();
-            proxy_request.start_line.version = HttpVersion(1, 1);
-
-            if !proxy_request.start_line.uri.host().is_empty() {
-                proxy_request.headers.insert(
-                    "Host".to_string(),
-                    proxy_request.start_line.uri.host().to_owned(),
-                );
-            }
-
-            for (header_name, header_value) in proxy_headers {
-                let header_name =
-                    replace_dynamic_vars(header_name, &request).map_err(ResponseError::VarError)?;
-                let header_value = replace_dynamic_vars(header_value, &request)
-                    .map_err(ResponseError::VarError)?;
-
-                proxy_request.headers.insert(header_name, header_value);
-            }
-
-            let mut stream = TcpStream::connect(uri)
-                .await
-                .map_err(ResponseError::IoError)?;
-
-            write_request(&mut BufWriter::new(&mut stream), &proxy_request)
-                .await
-                .map_err(ResponseError::IoError)?;
-
-            let mut response = parse_response(&mut BufReader::new(&mut stream))
-                .await
-                .map_err(ResponseError::ParseResponseError)?;
+            let mut response = proxy_pass(
+                parse_uri(&uri).map_err(ResponseError::UriParseError)?,
+                request,
+                proxy_headers,
+            )
+            .await
+            .map_err(ResponseError::ProxyError)?;
 
             for (header_name, header_value) in headers {
                 response.headers.insert(header_name, header_value);

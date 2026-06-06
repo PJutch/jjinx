@@ -103,6 +103,21 @@ pub fn replace_dynamic_vars(str: &str, request: &Request) -> Result<String, VarE
     replace_vars(str, |var, output| dynamic_replacer(var, output, request))
 }
 
+pub fn replace_dynamic_vars_headers(
+    headers: &HashMap<String, String>,
+    request: &Request,
+) -> Result<HashMap<String, String>, VarError> {
+    headers
+        .iter()
+        .map(|(k, v)| {
+            Ok((
+                replace_dynamic_vars(k, request)?,
+                replace_dynamic_vars(v, request)?,
+            ))
+        })
+        .collect::<Result<_, _>>()
+}
+
 fn static_replacer(
     var: &str,
     output: &mut String,
