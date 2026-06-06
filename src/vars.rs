@@ -45,7 +45,7 @@ fn dynamic_replacer(var: &str, output: &mut String, request: &Request) -> Result
     match var {
         "uri" => output.push_str(&request.start_line.uri.full),
         "host" => {
-            if request.start_line.uri.host.is_empty() {
+            if request.start_line.uri.host().is_empty() {
                 output.push_str(
                     &request
                         .headers
@@ -54,10 +54,10 @@ fn dynamic_replacer(var: &str, output: &mut String, request: &Request) -> Result
                         .unwrap_or(""),
                 );
             } else {
-                output.push_str(&request.start_line.uri.host)
+                output.push_str(&request.start_line.uri.host())
             }
         }
-        "method" => output.push_str(&request.start_line.uri.host),
+        "method" => output.push_str(&request.start_line.uri.host()),
         _ => return Err(VarError::UnknownVar(var.to_owned())),
     }
     Ok(())

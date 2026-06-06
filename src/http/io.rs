@@ -116,26 +116,6 @@ pub async fn read_until<Reader: AsyncBufRead + Unpin, F: Fn(u8) -> bool>(
     Ok(())
 }
 
-pub async fn read_until_inclusive<Reader: AsyncBufRead + Unpin, F: Fn(u8) -> bool>(
-    reader: &mut Reader,
-    until: F,
-    output: &mut Vec<u8>,
-) -> Result<(), ParseError> {
-    loop {
-        if let Some(c) = peek_byte(reader).await? {
-            output.push(c);
-            reader.consume(1);
-
-            if until(c) {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-    Ok(())
-}
-
 pub async fn skip_until_inclusive<Reader: AsyncBufRead + Unpin, F: Fn(u8) -> bool>(
     reader: &mut Reader,
     until: F,

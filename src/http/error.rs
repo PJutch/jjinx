@@ -4,6 +4,8 @@ use std::io;
 use std::num::ParseIntError;
 use std::string::FromUtf8Error;
 
+use crate::uri;
+
 use super::HttpVersion;
 
 #[derive(Error, Debug)]
@@ -30,8 +32,6 @@ pub enum ParseError {
     ExpectedColon,
     #[error("Expected line feed after carraige return")]
     ExpectedLineFeed,
-    #[error("Cut percent encoding")]
-    CutPersonEncoding,
-    #[error("Percent encoding should have hex digits, not byte value {0}")]
-    InvalidParcentEncodingDigit(u8),
+    #[error("Invalid URI: {0}")]
+    UriError(uri::ParseError),
 }

@@ -22,9 +22,11 @@ use route_matching::find_matching_route;
 
 mod vars;
 
+mod uri;
+
 fn get_host(request: &Request) -> Result<&str, Utf8Error> {
-    if !request.start_line.uri.host.is_empty() {
-        Ok(&request.start_line.uri.host)
+    if !request.start_line.uri.host().is_empty() {
+        Ok(&request.start_line.uri.host())
     } else {
         let host_port = &request.headers["Host"];
         if let Some(host_end) = host_port.find(':') {
@@ -48,7 +50,7 @@ async fn process_connection(
     }
 
     let route =
-        if let Some(route) = find_matching_route(server.as_ref(), &request.start_line.uri.path) {
+        if let Some(route) = find_matching_route(server.as_ref(), request.start_line.uri.path()) {
             route
         } else {
             return Ok(());

@@ -1,11 +1,10 @@
+use crate::uri::Uri;
 use std::collections::HashMap;
 
 mod error;
 pub use error::ParseError;
 
 mod io;
-
-mod uri;
 
 mod parse;
 
@@ -23,13 +22,6 @@ pub use response_write::write_response;
 
 #[derive(PartialEq, Debug, Clone, Copy)]
 pub struct HttpVersion(pub u8, pub u8);
-
-#[derive(Debug, Default, PartialEq, Clone)]
-pub struct Uri {
-    pub full: String,
-    pub path: String,
-    pub host: String,
-}
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct StartLine {

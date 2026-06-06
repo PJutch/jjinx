@@ -47,7 +47,7 @@ pub async fn construct_response(
     Ok(match &route.content {
         None => match route.status {
             Some(200) | None => {
-                let path = &request.start_line.uri.path;
+                let path = &request.start_line.uri.path();
                 let path = path.strip_prefix('/').unwrap_or(path);
 
                 if fs::exists(path).map_err(ResponseError::IoError)? {
@@ -124,10 +124,10 @@ pub async fn construct_response(
             let mut proxy_request = request.clone();
             proxy_request.start_line.version = HttpVersion(1, 1);
 
-            if !proxy_request.start_line.uri.host.is_empty() {
+            if !proxy_request.start_line.uri.host().is_empty() {
                 proxy_request.headers.insert(
                     "Host".to_string(),
-                    proxy_request.start_line.uri.host.clone(),
+                    proxy_request.start_line.uri.host().to_owned(),
                 );
             }
 
