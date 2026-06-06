@@ -2,10 +2,10 @@ use std::collections::HashMap;
 
 use futures::io;
 use thiserror::Error;
-use tokio::net::TcpStream;
 use tokio::io::{BufReader, BufWriter};
+use tokio::net::TcpStream;
 
-use crate::http::{self, HttpVersion, Request, Response, write_request, parse_response};
+use crate::http::{self, HttpVersion, Request, Response, parse_response, write_request};
 use crate::uri::Uri;
 
 #[derive(Debug, Error)]
@@ -19,6 +19,7 @@ pub enum ProxyError {
 pub async fn proxy_pass(
     uri: Uri,
     request: &Request,
+    matching_prefix_len: usize,
     new_headers: HashMap<String, String>,
 ) -> Result<Response, ProxyError> {
     let mut proxy_request = request.clone();
@@ -29,6 +30,13 @@ pub async fn proxy_pass(
             "Host".to_string(),
             proxy_request.start_line.uri.host().to_owned(),
         );
+    }
+
+    if !uri.path().is_empty() {
+        proxy_request
+            .start_line
+            .uri
+            .replace_path_prefix(matching_prefix_len, uri.path());
     }
 
     for (header_name, header_value) in new_headers {

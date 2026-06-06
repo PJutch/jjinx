@@ -38,6 +38,38 @@ impl Uri {
     pub fn fragment(&self) -> &str {
         &self.full[self.fragment_start..]
     }
+
+    pub fn replace_path_prefix(&mut self, old_prefix_len: usize, new_prefix: &str) {
+        self.full
+            .replace_range(self.path.0..self.path.0 + old_prefix_len, new_prefix);
+
+        if new_prefix.len() > old_prefix_len {
+            let len_change = new_prefix.len() - old_prefix_len;
+
+            if self.path.1 > 0 {
+                self.path.1 += len_change;
+            }
+
+            self.query.0 += len_change;
+            self.query.1 += len_change;
+            self.fragment_start += len_change;
+        } else {
+            let len_change = old_prefix_len - new_prefix.len();
+
+            if self.path.1 > 0 {
+                self.path.1 -= len_change;
+            }
+
+            if self.query.0 > 0 {
+                self.query.0 -= len_change;
+                self.query.1 -= len_change;
+            }
+
+            if self.fragment_start > 0 {
+                self.fragment_start -= len_change;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -215,48 +247,48 @@ mod tests {
         Ok(())
     }
 
-//     #[tokio::test]
-//     async fn parse_uri_no_authority() -> Result<(), ParseError> {
-//         let mut reader = Cursor::new("/pub/ietf/uri/#Related");
+    //     #[tokio::test]
+    //     async fn parse_uri_no_authority() -> Result<(), ParseError> {
+    //         let mut reader = Cursor::new("/pub/ietf/uri/#Related");
 
-//         let expected = Uri {
-//             full: "/pub/ietf/uri/#Related".to_owned(),
-//             host: "".to_owned(),
-//             path: "/pub/ietf/uri/".to_owned(),
-//         };
+    //         let expected = Uri {
+    //             full: "/pub/ietf/uri/#Related".to_owned(),
+    //             host: "".to_owned(),
+    //             path: "/pub/ietf/uri/".to_owned(),
+    //         };
 
-//         let uri = parse_uri(&mut reader).await?;
-//         assert_eq!(uri, expected);
-//         Ok(())
-//     }
+    //         let uri = parse_uri(&mut reader).await?;
+    //         assert_eq!(uri, expected);
+    //         Ok(())
+    //     }
 
-//     #[tokio::test]
-//     async fn parse_uri_percents() -> Result<(), ParseError> {
-//         let mut reader = Cursor::new("/%70ub/ietf/uri/#Related");
+    //     #[tokio::test]
+    //     async fn parse_uri_percents() -> Result<(), ParseError> {
+    //         let mut reader = Cursor::new("/%70ub/ietf/uri/#Related");
 
-//         let expected = Uri {
-//             full: "/%70ub/ietf/uri/#Related".to_owned(),
-//             host: "".to_owned(),
-//             path: "/pub/ietf/uri/".to_owned(),
-//         };
+    //         let expected = Uri {
+    //             full: "/%70ub/ietf/uri/#Related".to_owned(),
+    //             host: "".to_owned(),
+    //             path: "/pub/ietf/uri/".to_owned(),
+    //         };
 
-//         let uri = parse_uri(&mut reader).await?;
-//         assert_eq!(uri, expected);
-//         Ok(())
-//     }
+    //         let uri = parse_uri(&mut reader).await?;
+    //         assert_eq!(uri, expected);
+    //         Ok(())
+    //     }
 
-//     #[tokio::test]
-//     async fn parse_uri_path_compression() -> Result<(), ParseError> {
-//         let mut reader = Cursor::new("/..//./stays/removed/../#Related");
+    //     #[tokio::test]
+    //     async fn parse_uri_path_compression() -> Result<(), ParseError> {
+    //         let mut reader = Cursor::new("/..//./stays/removed/../#Related");
 
-//         let expected = Uri {
-//             full: "/..//./stays/removed/../#Related".to_owned(),
-//             host: "".to_owned(),
-//             path: "/../stays/".to_owned(),
-//         };
+    //         let expected = Uri {
+    //             full: "/..//./stays/removed/../#Related".to_owned(),
+    //             host: "".to_owned(),
+    //             path: "/../stays/".to_owned(),
+    //         };
 
-//         let uri = parse_uri(&mut reader).await?;
-//         assert_eq!(uri, expected);
-//         Ok(())
-//     }
+    //         let uri = parse_uri(&mut reader).await?;
+    //         assert_eq!(uri, expected);
+    //         Ok(())
+    //     }
 }

@@ -5,9 +5,10 @@ use std::io::Read;
 
 use thiserror::Error;
 
-use crate::config::{Content, Route};
+use crate::config::Content;
 use crate::http::{Request, Response};
 use crate::proxy::{ProxyError, proxy_pass};
+use crate::route_matching::Match;
 use crate::uri::{self, parse_uri};
 use crate::vars::{VarError, replace_dynamic_vars, replace_dynamic_vars_headers};
 
@@ -29,10 +30,15 @@ pub enum ResponseError {
     ProxyError(ProxyError),
 }
 
-pub async fn construct_response(
-    route: &Route,
+pub async fn construct_response<'a>(
+    matching: Match<'a>,
     request: &Request,
 ) -> Result<Response, ResponseError> {
+    let Match {
+        route,
+        matched_prefix_len,
+    } = matching;
+
     let mut headers =
         replace_dynamic_vars_headers(&route.headers, request).map_err(ResponseError::VarError)?;
 
@@ -118,6 +124,7 @@ pub async fn construct_response(
             let mut response = proxy_pass(
                 parse_uri(&uri).map_err(ResponseError::UriParseError)?,
                 request,
+                matched_prefix_len,
                 proxy_headers,
             )
             .await

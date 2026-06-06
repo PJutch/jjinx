@@ -4,7 +4,12 @@ use regex::Regex;
 
 use crate::config::{Route, Server, UriMatcher};
 
-pub fn find_matching_route<'a>(server: &'a Server, path: &str) -> Option<&'a Route> {
+pub struct Match<'a> {
+    pub route: &'a Route,
+    pub matched_prefix_len: usize,
+}
+
+pub fn find_matching_route<'a>(server: &'a Server, path: &str) -> Option<Match<'a>> {
     let mut prioritised = None::<&Route>;
     let mut regex = None::<&Route>;
     let mut prefix = None::<&Route>;
@@ -40,12 +45,23 @@ pub fn find_matching_route<'a>(server: &'a Server, path: &str) -> Option<&'a Rou
         }
     }
 
-    if prioritised.is_some() {
-        return prioritised;
-    } else if regex.is_some() {
-        return regex;
+    if let Some(prioritised) = prioritised {
+        Some(Match {
+            route: prioritised,
+            matched_prefix_len: prioritised.uri.len(),
+        })
+    } else if let Some(regex) = regex {
+        Some(Match {
+            route: regex,
+            matched_prefix_len: 0,
+        })
+    } else if let Some(prefix) = prefix {
+        Some(Match {
+            route: prefix,
+            matched_prefix_len: prefix.uri.len(),
+        })
     } else {
-        return prefix;
+        None
     }
 }
 
@@ -98,6 +114,7 @@ mod tests {
         assert_eq!(
             find_matching_route(&server, "/exact")
                 .unwrap()
+                .route
                 .status
                 .unwrap(),
             201
@@ -105,6 +122,7 @@ mod tests {
         assert_eq!(
             find_matching_route(&server, "/exct")
                 .unwrap()
+                .route
                 .status
                 .unwrap(),
             202
@@ -112,12 +130,13 @@ mod tests {
         assert_eq!(
             find_matching_route(&server, "/exat")
                 .unwrap()
+                .route
                 .status
                 .unwrap(),
             203
         );
         assert_eq!(
-            find_matching_route(&server, "/ex").unwrap().status.unwrap(),
+            find_matching_route(&server, "/ex").unwrap().route.status.unwrap(),
             204
         );
     }
