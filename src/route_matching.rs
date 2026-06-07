@@ -67,7 +67,7 @@ pub fn find_matching_route<'a>(server: &'a Server, path: &str) -> Option<Match<'
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, time::Duration};
 
     use super::find_matching_route;
     use crate::config::{Content, Route, Server, UriMatcher};
@@ -109,6 +109,9 @@ mod tests {
                     headers: HashMap::new(),
                 },
             ]),
+            header_timeout: None,
+            body_timeout: None,
+            send_timeout: None,
         };
 
         assert_eq!(
@@ -136,7 +139,11 @@ mod tests {
             203
         );
         assert_eq!(
-            find_matching_route(&server, "/ex").unwrap().route.status.unwrap(),
+            find_matching_route(&server, "/ex")
+                .unwrap()
+                .route
+                .status
+                .unwrap(),
             204
         );
     }

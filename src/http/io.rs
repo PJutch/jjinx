@@ -1,5 +1,8 @@
+use std::time::Duration;
+
 use super::ParseError;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
+use tokio::time::timeout;
 
 async fn try_read_byte<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
@@ -168,10 +171,15 @@ pub async fn skip_whitespace<Reader: AsyncBufRead + Unpin>(
 pub async fn read_n_bytes<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
     n: usize,
+    per_read_timeout: Duration,
 ) -> Result<Vec<u8>, ParseError> {
     let mut result = Vec::new();
     while result.len() < n {
-        let mut buf = reader.fill_buf().await.map_err(ParseError::IoError)?;
+        let mut buf = timeout(per_read_timeout, reader.fill_buf())
+            .await
+            .map_err(|_| ParseError::Timeout)?
+            .map_err(ParseError::IoError)?;
+
         if buf.is_empty() {
             return Ok(result);
         }

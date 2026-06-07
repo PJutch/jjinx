@@ -46,6 +46,9 @@ pub struct Server {
     pub domain_names: Vec<String>,
     pub is_default: bool,
     pub routes: Vec<Route>,
+    pub header_timeout: Option<Duration>,
+    pub body_timeout: Option<Duration>,
+    pub send_timeout: Option<Duration>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -59,8 +62,14 @@ pub enum Balancing {
 pub struct Upstream {
     pub servers: Vec<String>,
     pub balancing: Option<Balancing>,
+
     pub max_fails: Option<usize>,
     pub fail_timeout: Option<Duration>,
+
+    pub connect_timeout: Option<Duration>,
+    pub header_timeout: Option<Duration>,
+    pub body_timeout: Option<Duration>,
+    pub send_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Default, PartialEq)]

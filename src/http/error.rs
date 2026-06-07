@@ -34,4 +34,14 @@ pub enum ParseError {
     ExpectedLineFeed,
     #[error("Invalid URI: {0}")]
     UriError(uri::ParseError),
+    #[error("Timeout")]
+    Timeout,
+}
+
+#[derive(Debug, Error)]
+pub enum SendError {
+    #[error("Io error: {0}")]
+    IoError(io::Error),
+    #[error("Timeout")]
+    Timeout,
 }

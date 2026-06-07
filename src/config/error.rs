@@ -29,3 +29,11 @@ pub enum ParseError {
     #[error("Unknow escape sequence: \\{0}")]
     UnknownEscape(String),
 }
+
+#[derive(Debug, Error)]
+pub enum SendError {
+    #[error("Io error: {0}")]
+    IoError(io::Error),
+    #[error("Timeout")]
+    Timeout,
+}

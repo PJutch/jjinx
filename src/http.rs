@@ -2,7 +2,7 @@ use crate::uri::Uri;
 use std::{collections::HashMap, net::IpAddr};
 
 mod error;
-pub use error::ParseError;
+pub use error::{ParseError, SendError};
 
 mod io;
 

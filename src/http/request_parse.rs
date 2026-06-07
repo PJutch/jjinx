@@ -1,6 +1,8 @@
 use std::net::IpAddr;
+use std::time::Duration;
 
 use tokio::io::AsyncBufRead;
+use tokio::time::timeout;
 
 use super::io::{read_byte, read_token, try_skip_newline};
 use super::parse::{parse_body, parse_headers, parse_http_version};
@@ -37,13 +39,20 @@ async fn parse_start_line<Reader: AsyncBufRead + Unpin>(
 pub async fn parse_request<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
     ip: IpAddr,
+    header_timeout: Duration,
+    body_timeout: Duration,
 ) -> Result<Request, ParseError> {
-    let start_line = parse_start_line(reader).await?;
-    try_skip_newline(reader).await?;
-    let headers = parse_headers(reader).await?;
-    try_skip_newline(reader).await?;
+    let (start_line, headers) = timeout(header_timeout, async {
+        let start_line = parse_start_line(reader).await?;
+        try_skip_newline(reader).await?;
+        let headers = parse_headers(reader).await?;
+        try_skip_newline(reader).await?;
+        Ok((start_line, headers))
+    })
+    .await
+    .map_err(|_| ParseError::Timeout)??;
 
-    let body = parse_body(reader, &headers).await?;
+    let body = parse_body(reader, &headers, body_timeout).await?;
 
     Ok(Request {
         ip,
@@ -60,6 +69,7 @@ mod tests {
     };
     use crate::uri::parse_uri;
     use indoc::indoc;
+    use std::time::Duration;
     use std::{collections::HashMap, io::Cursor};
 
     #[tokio::test]
@@ -110,7 +120,7 @@ mod tests {
             <html><body>something</body></html>"});
         let ip = "127.0.0.1".parse().unwrap();
 
-        let request = parse_request(&mut reader, ip).await?;
+        let request = parse_request(&mut reader, ip, Duration::MAX, Duration::MAX).await?;
 
         assert_eq!(
             request,
@@ -142,7 +152,7 @@ mod tests {
         "});
         let ip = "127.0.0.1".parse().unwrap();
 
-        let request = parse_request(&mut reader, ip).await?;
+        let request = parse_request(&mut reader, ip, Duration::MAX, Duration::MAX).await?;
 
         assert_eq!(
             request,

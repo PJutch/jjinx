@@ -1,5 +1,6 @@
 use crate::config::{Balancing, Config, Upstream};
 use crate::vars::replace_static_vars;
+use std::time::Duration;
 use std::{collections::HashMap, io::BufRead};
 
 use super::tokenizer::{consume_fixed, next_token, read_tokens_until_newline};
@@ -239,6 +240,45 @@ fn parse_server_config<Reader: BufRead>(
                 server.routes.push(parse_route(reader, global_vars, &vars)?);
                 consume_fixed(reader, "\n")?;
             }
+            "header_timeout" => {
+                let timeout = Duration::from_secs(
+                    next_token(reader)?
+                        .parse()
+                        .map_err(ParseError::ParseIntError)?,
+                );
+
+                if server.header_timeout.is_none() {
+                    server.header_timeout = Some(timeout);
+                } else {
+                    return Err(ParseError::DuplicateField(token));
+                }
+            }
+            "body_timeout" => {
+                let timeout = Duration::from_secs(
+                    next_token(reader)?
+                        .parse()
+                        .map_err(ParseError::ParseIntError)?,
+                );
+
+                if server.body_timeout.is_none() {
+                    server.body_timeout = Some(timeout);
+                } else {
+                    return Err(ParseError::DuplicateField(token));
+                }
+            }
+            "send_timeout" => {
+                let timeout = Duration::from_secs(
+                    next_token(reader)?
+                        .parse()
+                        .map_err(ParseError::ParseIntError)?,
+                );
+
+                if server.send_timeout.is_none() {
+                    server.send_timeout = Some(timeout);
+                } else {
+                    return Err(ParseError::DuplicateField(token));
+                }
+            }
             "set" => {
                 let (var, value) = parse_set(reader, &[&vars, global_vars])?;
                 vars.insert(var, value);
@@ -288,6 +328,45 @@ pub fn parse_upstream_config<Reader: BufRead>(
                     upstream.balancing = Some(Balancing::IpHash);
                 } else {
                     return Err(ParseError::DuplicateBalancing(name));
+                }
+            }
+            "connect_timeout" => {
+                let timeout = Duration::from_secs(
+                    next_token(reader)?
+                        .parse()
+                        .map_err(ParseError::ParseIntError)?,
+                );
+
+                if upstream.connect_timeout.is_none() {
+                    upstream.connect_timeout = Some(timeout);
+                } else {
+                    return Err(ParseError::DuplicateField(token));
+                }
+            }
+            "header_timeout" => {
+                let timeout = Duration::from_secs(
+                    next_token(reader)?
+                        .parse()
+                        .map_err(ParseError::ParseIntError)?,
+                );
+
+                if upstream.header_timeout.is_none() {
+                    upstream.header_timeout = Some(timeout);
+                } else {
+                    return Err(ParseError::DuplicateField(token));
+                }
+            }
+            "send_timeout" => {
+                let timeout = Duration::from_secs(
+                    next_token(reader)?
+                        .parse()
+                        .map_err(ParseError::ParseIntError)?,
+                );
+
+                if upstream.send_timeout.is_none() {
+                    upstream.send_timeout = Some(timeout);
+                } else {
+                    return Err(ParseError::DuplicateField(token));
                 }
             }
             "set" => {
@@ -452,6 +531,9 @@ mod tests {
                                 headers: HashMap::new(),
                             }
                         ]),
+                        header_timeout: None,
+                        body_timeout: None,
+                        send_timeout: None,
                     },
                     Server {
                         port: Some(8080),
@@ -467,7 +549,10 @@ mod tests {
                             content: Some(Content::NoContent),
                             status: Some(404),
                             headers: HashMap::new(),
-                        }])
+                        }]),
+                        header_timeout: None,
+                        body_timeout: None,
+                        send_timeout: None,
                     }
                 ]),
                 upstreams: HashMap::from([(
@@ -478,8 +563,14 @@ mod tests {
                             "app1.example.com".to_owned(),
                             "app2.example.com".to_owned(),
                             "app3.example.com".to_owned(),
-                        ])
-                    }
+                        ]),
+                        max_fails: None,
+                        fail_timeout: None,
+                        connect_timeout: None,
+                        header_timeout: None,
+                        body_timeout: None,
+                        send_timeout: None,
+                    },
                 )]),
             }
         );

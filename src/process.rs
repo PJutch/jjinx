@@ -4,11 +4,12 @@ use std::fs::File;
 use std::io;
 use std::io::Read;
 use std::sync::Arc;
+use std::time::Duration;
 
 use thiserror::Error;
 
 use crate::config::{Content, Server};
-use crate::http::{self, Request, Response, parse_request, write_response};
+use crate::http::{self, ParseError, Request, Response, SendError, parse_request, write_response};
 use crate::proxy::{ProxyError, Upstream, proxy_pass};
 use crate::route_matching::{Match, find_matching_route};
 use crate::uri::{self, parse_uri};
@@ -37,8 +38,8 @@ enum ServerError {
     UriParseError(uri::ParseError),
     #[error("Proxy error: {0}")]
     ProxyError(ProxyError),
-    #[error("Io error while responding: {0}")]
-    ResponseError(io::Error),
+    #[error("Error writing response: {0}")]
+    ResponseError(SendError),
 }
 
 async fn construct_response<'a>(
@@ -175,9 +176,14 @@ async fn process_request(
     upstreams: Arc<HashMap<String, Upstream>>,
 ) -> Result<(), ServerError> {
     let mut reader = BufReader::new(&mut *socket);
-    let request = parse_request(&mut reader, ip)
-        .await
-        .map_err(ServerError::RequestParseError)?;
+    let request = parse_request(
+        &mut reader,
+        ip,
+        server.header_timeout.unwrap_or(Duration::from_secs(60)),
+        server.body_timeout.unwrap_or(Duration::from_secs(60)),
+    )
+    .await
+    .map_err(ServerError::RequestParseError)?;
 
     let host = get_host(&request);
     if !server.domain_names.iter().any(|name| name == host) && !server.is_default {
@@ -195,6 +201,7 @@ async fn process_request(
     write_response(
         &mut writer,
         &construct_response(route, &request, upstreams).await?,
+        server.send_timeout.unwrap_or(Duration::from_secs(60)),
     )
     .await
     .map_err(ServerError::ResponseError)?;
@@ -208,8 +215,28 @@ pub async fn process_connection(
     server: Arc<Server>,
     upstreams: Arc<HashMap<String, Upstream>>,
 ) {
+    let send_timeout = server.send_timeout;
+
     match process_request(socket, ip, server, upstreams).await {
         Ok(()) => {}
+        Err(err @ ServerError::RequestParseError(ParseError::Timeout)) => {
+            println!("Timeout {err}");
+
+            let mut writer = BufWriter::new(socket);
+            if let Err(err) = write_response(
+                &mut writer,
+                &Response {
+                    status: 408,
+                    headers: HashMap::new(),
+                    body: Vec::new(),
+                },
+                send_timeout.unwrap_or(Duration::from_secs(60)),
+            )
+            .await
+            {
+                println!("Response error: {err}")
+            }
+        }
         Err(ServerError::RequestParseError(err)) => {
             println!("Bad request {err}");
 
@@ -221,10 +248,11 @@ pub async fn process_connection(
                     headers: HashMap::new(),
                     body: Vec::new(),
                 },
+                send_timeout.unwrap_or(Duration::from_secs(60)),
             )
             .await
             {
-                println!("Io error while responding: {err}")
+                println!("Response error: {err}")
             }
         }
         Err(ServerError::ResponseError(err)) => {
@@ -241,10 +269,11 @@ pub async fn process_connection(
                     headers: HashMap::new(),
                     body: Vec::new(),
                 },
+                send_timeout.unwrap_or(Duration::from_secs(60)),
             )
             .await
             {
-                println!("Io error while responding: {err}")
+                println!("Response error: {err}")
             }
         }
     }

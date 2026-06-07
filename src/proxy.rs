@@ -7,15 +7,16 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use std::u32;
 
-use futures::io;
 use scopeguard::defer;
+use std::io;
 use thiserror::Error;
 use tokio::io::{BufReader, BufWriter};
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 use twox_hash::XxHash64;
 
 use crate::config;
-use crate::http::{self, HttpVersion, Request, Response, parse_response, write_request};
+use crate::http::{self, HttpVersion, Request, Response, SendError, parse_response, write_request};
 use crate::uri::Uri;
 use crate::vars::{VarError, replace_dynamic_vars};
 
@@ -27,6 +28,8 @@ pub enum ProxyError {
     ResponseParseError(http::ParseError),
     #[error("Var error: {0}")]
     VarError(VarError),
+    #[error("Timeout")]
+    Timeout,
 }
 
 enum Balancer {
@@ -38,9 +41,15 @@ enum Balancer {
 pub struct Upstream {
     balancer: Balancer,
     servers: Vec<String>,
+
     failures: Vec<Mutex<VecDeque<Instant>>>,
     max_fails: usize,
+
+    connect_timeout: Duration,
     fail_timeout: Duration,
+    header_timeout: Duration,
+    body_timeout: Duration,
+    send_timeout: Duration,
 }
 
 impl Upstream {
@@ -170,6 +179,10 @@ pub fn make_upstreams(config: HashMap<String, config::Upstream>) -> HashMap<Stri
                         .collect(),
                     max_fails: config.max_fails.unwrap_or(1),
                     fail_timeout: config.fail_timeout.unwrap_or(Duration::from_secs(10)),
+                    connect_timeout: config.connect_timeout.unwrap_or(Duration::from_secs(60)),
+                    header_timeout: config.header_timeout.unwrap_or(Duration::from_secs(60)),
+                    body_timeout: config.body_timeout.unwrap_or(Duration::from_secs(60)),
+                    send_timeout: config.send_timeout.unwrap_or(Duration::from_secs(60)),
                     servers: config.servers,
                 },
             )
@@ -183,6 +196,10 @@ async fn proxy_pass_to(
     request: &Request,
     matching_prefix_len: usize,
     new_headers: HashMap<String, String>,
+    connect_timeout: Duration,
+    header_timeout: Duration,
+    body_timeout: Duration,
+    send_timeout: Duration,
 ) -> Result<Response, ProxyError> {
     let mut proxy_request = request.clone();
     proxy_request.start_line.version = HttpVersion(1, 1);
@@ -205,17 +222,29 @@ async fn proxy_pass_to(
         proxy_request.headers.insert(header_name, header_value);
     }
 
-    let mut stream = TcpStream::connect(host)
+    let mut stream = timeout(connect_timeout, TcpStream::connect(host))
         .await
+        .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::IoError)?;
 
-    write_request(&mut BufWriter::new(&mut stream), &proxy_request)
-        .await
-        .map_err(ProxyError::IoError)?;
+    write_request(
+        &mut BufWriter::new(&mut stream),
+        &proxy_request,
+        send_timeout,
+    )
+    .await
+    .map_err(|err| match err {
+        SendError::IoError(err) => ProxyError::IoError(err),
+        SendError::Timeout => ProxyError::Timeout,
+    })?;
 
-    Ok(parse_response(&mut BufReader::new(&mut stream))
-        .await
-        .map_err(ProxyError::ResponseParseError)?)
+    Ok(parse_response(
+        &mut BufReader::new(&mut stream),
+        header_timeout,
+        body_timeout,
+    )
+    .await
+    .map_err(ProxyError::ResponseParseError)?)
 }
 
 pub async fn proxy_pass(
@@ -243,7 +272,27 @@ pub async fn proxy_pass(
     };
     let host = if host.is_empty() { uri.host() } else { &host };
 
-    match proxy_pass_to(&uri, host, request, matching_prefix_len, new_headers).await {
+    match proxy_pass_to(
+        &uri,
+        host,
+        request,
+        matching_prefix_len,
+        new_headers,
+        upstream
+            .map(|pair| pair.0.connect_timeout)
+            .unwrap_or(Duration::from_secs(60)),
+        upstream
+            .map(|pair| pair.0.header_timeout)
+            .unwrap_or(Duration::from_secs(60)),
+        upstream
+            .map(|pair| pair.0.body_timeout)
+            .unwrap_or(Duration::from_secs(60)),
+        upstream
+            .map(|pair| pair.0.send_timeout)
+            .unwrap_or(Duration::from_secs(60)),
+    )
+    .await
+    {
         Ok(response) => Ok(response),
         Err(err) => {
             if let Some((upstream, server)) = upstream {

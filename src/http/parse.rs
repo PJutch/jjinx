@@ -4,6 +4,7 @@ use super::io::{
 };
 use super::{HttpVersion, ParseError};
 use std::collections::HashMap;
+use std::time::Duration;
 use tokio::io::AsyncBufRead;
 
 pub async fn parse_http_version<Reader: AsyncBufRead + Unpin>(
@@ -77,10 +78,11 @@ pub async fn parse_headers<Reader: AsyncBufRead + Unpin>(
 pub async fn parse_body<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
     headers: &HashMap<String, String>,
+    timeout: Duration
 ) -> Result<Vec<u8>, ParseError> {
     Ok(if let Some(data) = headers.get("Content-Length") {
         let len = data.parse().map_err(ParseError::ParseIntError)?;
-        read_n_bytes(reader, len).await?
+        read_n_bytes(reader, len, timeout).await?
     } else if let Some(_) = headers.get("Transfer-Encoding") {
         todo!("Handle Transfer-Encoding");
     } else {
