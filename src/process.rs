@@ -137,7 +137,7 @@ async fn construct_response<'a>(
                 .map_err(ServerError::VarError)?;
 
             let mut response = proxy_pass(
-                parse_uri(&uri).map_err(ServerError::UriParseError)?,
+                &parse_uri(&uri).map_err(ServerError::UriParseError)?,
                 request,
                 matched_prefix_len,
                 proxy_headers,

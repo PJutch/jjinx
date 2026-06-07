@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::Ipv4Addr};
+use std::{collections::HashMap, net::Ipv4Addr, time::Duration};
 
 mod error;
 pub use error::ParseError;
@@ -59,6 +59,8 @@ pub enum Balancing {
 pub struct Upstream {
     pub servers: Vec<String>,
     pub balancing: Option<Balancing>,
+    pub max_fails: Option<usize>,
+    pub fail_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Default, PartialEq)]
