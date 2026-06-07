@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use tokio::io::AsyncBufRead;
 
 use super::io::{read_byte, read_token, try_skip_newline};
@@ -34,6 +36,7 @@ async fn parse_start_line<Reader: AsyncBufRead + Unpin>(
 
 pub async fn parse_request<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
+    ip: IpAddr,
 ) -> Result<Request, ParseError> {
     let start_line = parse_start_line(reader).await?;
     try_skip_newline(reader).await?;
@@ -43,6 +46,7 @@ pub async fn parse_request<Reader: AsyncBufRead + Unpin>(
     let body = parse_body(reader, &headers).await?;
 
     Ok(Request {
+        ip,
         start_line,
         headers,
         body,
@@ -104,10 +108,14 @@ mod tests {
             Content-Length: 48\r
             \r
             <html><body>something</body></html>"});
-        let start_line = parse_request(&mut reader).await?;
+        let ip = "127.0.0.1".parse().unwrap();
+
+        let request = parse_request(&mut reader, ip).await?;
+
         assert_eq!(
-            start_line,
+            request,
             Request {
+                ip,
                 start_line: StartLine {
                     method: "GET".to_owned(),
                     uri: parse_uri("http://www.ics.uci.edu/pub/ietf/uri/#Related").unwrap(),
@@ -132,10 +140,14 @@ mod tests {
             header2:value2  \r
             \r
         "});
-        let start_line = parse_request(&mut reader).await?;
+        let ip = "127.0.0.1".parse().unwrap();
+
+        let request = parse_request(&mut reader, ip).await?;
+
         assert_eq!(
-            start_line,
+            request,
             Request {
+                ip,
                 start_line: StartLine {
                     method: "GET".to_owned(),
                     uri: parse_uri("http://www.ics.uci.edu/pub/ietf/uri/#Related").unwrap(),

@@ -1,13 +1,15 @@
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::Read;
+use std::sync::Arc;
 
 use thiserror::Error;
 
 use crate::config::Content;
 use crate::http::{Request, Response};
-use crate::proxy::{ProxyError, proxy_pass};
+use crate::proxy::{ProxyError, Upstream, proxy_pass};
 use crate::route_matching::Match;
 use crate::uri::{self, parse_uri};
 use crate::vars::{VarError, replace_dynamic_vars, replace_dynamic_vars_headers};
@@ -33,6 +35,7 @@ pub enum ResponseError {
 pub async fn construct_response<'a>(
     matching: Match<'a>,
     request: &Request,
+    upstreams: Arc<HashMap<String, Upstream>>,
 ) -> Result<Response, ResponseError> {
     let Match {
         route,
@@ -126,6 +129,7 @@ pub async fn construct_response<'a>(
                 request,
                 matched_prefix_len,
                 proxy_headers,
+                upstreams,
             )
             .await
             .map_err(ResponseError::ProxyError)?;

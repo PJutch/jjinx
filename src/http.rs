@@ -1,5 +1,5 @@
 use crate::uri::Uri;
-use std::collections::HashMap;
+use std::{collections::HashMap, net::IpAddr};
 
 mod error;
 pub use error::ParseError;
@@ -32,6 +32,7 @@ pub struct StartLine {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct Request {
+    pub ip: IpAddr,
     pub start_line: StartLine,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,

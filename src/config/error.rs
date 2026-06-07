@@ -22,6 +22,8 @@ pub enum ParseError {
     DuplicateField(String),
     #[error("Route {0} already has content")]
     DuplicateContent(String),
+    #[error("Upstream {0} already has balancing mode")]
+    DuplicateBalancing(String),
     #[error("Unknown matcher: {0}")]
     UnknownMatcher(String),
     #[error("Unknow escape sequence: \\{0}")]

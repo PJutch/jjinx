@@ -1,3 +1,4 @@
+use crate::config::{Balancing, Config, Upstream};
 use crate::vars::replace_static_vars;
 use std::{collections::HashMap, io::BufRead};
 
@@ -251,14 +252,70 @@ fn parse_server_config<Reader: BufRead>(
     Ok(server)
 }
 
-pub fn parse_config<Reader: BufRead>(reader: &mut Reader) -> Result<Vec<Server>, ParseError> {
-    let mut servers = Vec::new();
+pub fn parse_upstream_config<Reader: BufRead>(
+    reader: &mut Reader,
+    global_vars: &HashMap<String, String>,
+) -> Result<(String, Upstream), ParseError> {
+    let name = next_token(reader)?;
+    consume_fixed(reader, "{")?;
+
+    let mut upstream = Upstream::default();
     let mut vars = HashMap::new();
 
     loop {
         let token = next_token(reader)?;
         match token.as_str() {
-            "server" => servers.push(parse_server_config(reader, &vars)?),
+            "server" => {
+                let uri = replace_static_vars(&next_token(reader)?, &[&vars, global_vars]).unwrap();
+                upstream.servers.push(uri);
+            }
+            "round_robin" => {
+                if upstream.balancing.is_none() {
+                    upstream.balancing = Some(Balancing::RoundRobin);
+                } else {
+                    return Err(ParseError::DuplicateBalancing(name));
+                }
+            }
+            "least_conn" => {
+                if upstream.balancing.is_none() {
+                    upstream.balancing = Some(Balancing::LeastConnected);
+                } else {
+                    return Err(ParseError::DuplicateBalancing(name));
+                }
+            }
+            "ip_hash" => {
+                if upstream.balancing.is_none() {
+                    upstream.balancing = Some(Balancing::IpHash);
+                } else {
+                    return Err(ParseError::DuplicateBalancing(name));
+                }
+            }
+            "set" => {
+                let (var, value) = parse_set(reader, &[&vars, global_vars])?;
+                vars.insert(var, value);
+            }
+            "\n" => {}
+            "}" => break,
+            "" => return Err(ParseError::UnexpectedEof),
+            _ => return Err(ParseError::UnknownField(token)),
+        }
+    }
+
+    Ok((name, upstream))
+}
+
+pub fn parse_config<Reader: BufRead>(reader: &mut Reader) -> Result<Config, ParseError> {
+    let mut config = Config::default();
+    let mut vars = HashMap::new();
+
+    loop {
+        let token = next_token(reader)?;
+        match token.as_str() {
+            "server" => config.servers.push(parse_server_config(reader, &vars)?),
+            "upstream" => {
+                let (name, upstream) = parse_upstream_config(reader, &vars)?;
+                config.upstreams.insert(name, upstream);
+            }
             "set" => {
                 let (var, value) = parse_set(reader, &[&vars])?;
                 vars.insert(var, value);
@@ -269,12 +326,14 @@ pub fn parse_config<Reader: BufRead>(reader: &mut Reader) -> Result<Vec<Server>,
         }
     }
 
-    Ok(servers)
+    Ok(config)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{Content, ParseError, Route, Server, UriMatcher};
+    use crate::config::{
+        Balancing, Config, Content, ParseError, Route, Server, Upstream, UriMatcher,
+    };
     use indoc::indoc;
     use std::{collections::HashMap, io::Cursor, net::Ipv4Addr};
 
@@ -314,6 +373,13 @@ mod tests {
 
             # a comment
 
+            upstream backend {
+                least_conn
+                server app1.example.com
+                server app2.example.com
+                server app3.example.com
+            }
+
             server {
                 port $port
                 ip 127.0.0.1
@@ -329,77 +395,93 @@ mod tests {
 
         assert_eq!(
             super::parse_config(&mut reader)?,
-            Vec::from([
-                Server {
-                    port: Some(8080),
-                    ip: None,
-                    domain_names: Vec::new(),
-                    is_default: true,
-                    routes: Vec::from([
-                        Route {
-                            uri: "/".to_owned(),
-                            matcher: UriMatcher::Prefix,
-                            content: Some(Content::Redirect("/index.html".to_owned())),
-                            status: None,
+            Config {
+                servers: Vec::from([
+                    Server {
+                        port: Some(8080),
+                        ip: None,
+                        domain_names: Vec::new(),
+                        is_default: true,
+                        routes: Vec::from([
+                            Route {
+                                uri: "/".to_owned(),
+                                matcher: UriMatcher::Prefix,
+                                content: Some(Content::Redirect("/index.html".to_owned())),
+                                status: None,
+                                headers: HashMap::new(),
+                            },
+                            Route {
+                                uri: "/index.html".to_owned(),
+                                matcher: UriMatcher::Prefix,
+                                content: Some(Content::FileAny(Vec::from([
+                                    "/index.html".into(),
+                                    "/index.htm".into(),
+                                    "/has a space.html".into(),
+                                ]))),
+                                status: None,
+                                headers: HashMap::from(HashMap::from([(
+                                    "Content-Type".to_owned(),
+                                    "text/html".into()
+                                )])),
+                            },
+                            Route {
+                                uri: "/images/".to_owned(),
+                                matcher: UriMatcher::Prefix,
+                                content: None,
+                                status: None,
+                                headers: HashMap::new()
+                            },
+                            Route {
+                                uri: "/test".to_owned(),
+                                matcher: UriMatcher::Prefix,
+                                content: Some(Content::RawData("test test test".to_owned())),
+                                status: None,
+                                headers: HashMap::new(),
+                            },
+                            Route {
+                                uri: "/proxy".to_owned(),
+                                matcher: UriMatcher::Prefix,
+                                content: Some(Content::Proxy {
+                                    uri: "http://example.com".to_owned(),
+                                    headers: HashMap::from([(
+                                        "Host".to_owned(),
+                                        "$host".to_owned()
+                                    )])
+                                }),
+                                status: None,
+                                headers: HashMap::new(),
+                            }
+                        ]),
+                    },
+                    Server {
+                        port: Some(8080),
+                        ip: Some(Ipv4Addr::from_octets([127, 0, 0, 1])),
+                        domain_names: Vec::from([
+                            "example.com".to_owned(),
+                            "www.example.com".to_owned()
+                        ]),
+                        is_default: false,
+                        routes: Vec::from([Route {
+                            uri: "/blocked".to_owned(),
+                            matcher: UriMatcher::Exact,
+                            content: Some(Content::NoContent),
+                            status: Some(404),
                             headers: HashMap::new(),
-                        },
-                        Route {
-                            uri: "/index.html".to_owned(),
-                            matcher: UriMatcher::Prefix,
-                            content: Some(Content::FileAny(Vec::from([
-                                "/index.html".into(),
-                                "/index.htm".into(),
-                                "/has a space.html".into(),
-                            ]))),
-                            status: None,
-                            headers: HashMap::from(HashMap::from([(
-                                "Content-Type".to_owned(),
-                                "text/html".into()
-                            )])),
-                        },
-                        Route {
-                            uri: "/images/".to_owned(),
-                            matcher: UriMatcher::Prefix,
-                            content: None,
-                            status: None,
-                            headers: HashMap::new()
-                        },
-                        Route {
-                            uri: "/test".to_owned(),
-                            matcher: UriMatcher::Prefix,
-                            content: Some(Content::RawData("test test test".to_owned())),
-                            status: None,
-                            headers: HashMap::new(),
-                        },
-                        Route {
-                            uri: "/proxy".to_owned(),
-                            matcher: UriMatcher::Prefix,
-                            content: Some(Content::Proxy {
-                                uri: "http://example.com".to_owned(),
-                                headers: HashMap::from([("Host".to_owned(), "$host".to_owned())])
-                            }),
-                            status: None,
-                            headers: HashMap::new(),
-                        }
-                    ]),
-                },
-                Server {
-                    port: Some(8080),
-                    ip: Some(Ipv4Addr::from_octets([127, 0, 0, 1])),
-                    domain_names: Vec::from([
-                        "example.com".to_owned(),
-                        "www.example.com".to_owned()
-                    ]),
-                    is_default: false,
-                    routes: Vec::from([Route {
-                        uri: "/blocked".to_owned(),
-                        matcher: UriMatcher::Exact,
-                        content: Some(Content::NoContent),
-                        status: Some(404),
-                        headers: HashMap::new(),
-                    }])
-                }
-            ]),
+                        }])
+                    }
+                ]),
+                upstreams: HashMap::from([(
+                    "backend".to_owned(),
+                    Upstream {
+                        balancing: Some(Balancing::LeastConnected),
+                        servers: Vec::from([
+                            "app1.example.com".to_owned(),
+                            "app2.example.com".to_owned(),
+                            "app3.example.com".to_owned(),
+                        ])
+                    }
+                )]),
+            }
         );
 
         Ok(())

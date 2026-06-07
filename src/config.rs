@@ -47,3 +47,22 @@ pub struct Server {
     pub is_default: bool,
     pub routes: Vec<Route>,
 }
+
+#[derive(Debug, PartialEq)]
+pub enum Balancing {
+    RoundRobin,
+    LeastConnected,
+    IpHash,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct Upstream {
+    pub servers: Vec<String>,
+    pub balancing: Option<Balancing>,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct Config {
+    pub servers: Vec<Server>,
+    pub upstreams: HashMap<String, Upstream>,
+}
