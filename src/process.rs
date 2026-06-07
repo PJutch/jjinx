@@ -7,12 +7,17 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::config::Content;
-use crate::http::{Request, Response};
+use crate::config::{Content, Server};
+use crate::http::{self, Request, Response, parse_request, write_response};
 use crate::proxy::{ProxyError, Upstream, proxy_pass};
-use crate::route_matching::Match;
+use crate::route_matching::{Match, find_matching_route};
 use crate::uri::{self, parse_uri};
 use crate::vars::{VarError, replace_dynamic_vars, replace_dynamic_vars_headers};
+
+use std::net::IpAddr;
+
+use tokio::io::{BufReader, BufWriter};
+use tokio::net::TcpStream;
 
 fn read_file(path: &str) -> Result<Vec<u8>, io::Error> {
     let mut result = Vec::new();
@@ -21,7 +26,9 @@ fn read_file(path: &str) -> Result<Vec<u8>, io::Error> {
 }
 
 #[derive(Debug, Error)]
-pub enum ResponseError {
+enum ServerError {
+    #[error("Bad request: {0}")]
+    RequestParseError(http::ParseError),
     #[error("Io error: {0}")]
     IoError(io::Error),
     #[error("Variable error: {0}")]
@@ -30,20 +37,22 @@ pub enum ResponseError {
     UriParseError(uri::ParseError),
     #[error("Proxy error: {0}")]
     ProxyError(ProxyError),
+    #[error("Io error while responding: {0}")]
+    ResponseError(io::Error),
 }
 
-pub async fn construct_response<'a>(
+async fn construct_response<'a>(
     matching: Match<'a>,
     request: &Request,
     upstreams: Arc<HashMap<String, Upstream>>,
-) -> Result<Response, ResponseError> {
+) -> Result<Response, ServerError> {
     let Match {
         route,
         matched_prefix_len,
     } = matching;
 
     let mut headers =
-        replace_dynamic_vars_headers(&route.headers, request).map_err(ResponseError::VarError)?;
+        replace_dynamic_vars_headers(&route.headers, request).map_err(ServerError::VarError)?;
 
     Ok(match &route.content {
         None => match route.status {
@@ -51,11 +60,11 @@ pub async fn construct_response<'a>(
                 let path = &request.start_line.uri.path();
                 let path = path.strip_prefix('/').unwrap_or(path);
 
-                if fs::exists(path).map_err(ResponseError::IoError)? {
+                if fs::exists(path).map_err(ServerError::IoError)? {
                     Response {
                         status: 200,
                         headers: headers,
-                        body: read_file(path).map_err(ResponseError::IoError)?,
+                        body: read_file(path).map_err(ServerError::IoError)?,
                     }
                 } else if route.status.is_some() {
                     Response {
@@ -86,28 +95,31 @@ pub async fn construct_response<'a>(
             status: route.status.unwrap_or(200),
             headers: headers,
             body: replace_dynamic_vars(data, request)
-                .map_err(ResponseError::VarError)?
+                .map_err(ServerError::VarError)?
                 .as_bytes()
                 .to_owned(),
         },
         Some(Content::FileAny(files)) => {
             let mut body = Vec::new();
-            for file in files {
-                let file = replace_dynamic_vars(&file, request).map_err(ResponseError::VarError)?;
+            let mut found = false;
 
-                if fs::exists(&file).map_err(ResponseError::IoError)? {
-                    body = read_file(&file).map_err(ResponseError::IoError)?;
+            for file in files {
+                let file = replace_dynamic_vars(&file, request).map_err(ServerError::VarError)?;
+
+                if fs::exists(&file).map_err(ServerError::IoError)? {
+                    body = read_file(&file).map_err(ServerError::IoError)?;
+                    found = true;
                 }
             }
 
             Response {
-                status: route.status.unwrap_or(200),
+                status: route.status.unwrap_or(if found { 200 } else { 404 }),
                 headers: headers,
                 body: body,
             }
         }
         Some(Content::Redirect(uri)) => {
-            let uri = replace_dynamic_vars(&uri, request).map_err(ResponseError::VarError)?;
+            let uri = replace_dynamic_vars(&uri, request).map_err(ServerError::VarError)?;
             headers.insert("Location".to_owned(), uri.clone());
 
             Response {
@@ -120,19 +132,19 @@ pub async fn construct_response<'a>(
             uri,
             headers: proxy_headers,
         }) => {
-            let uri = replace_dynamic_vars(&uri, request).map_err(ResponseError::VarError)?;
+            let uri = replace_dynamic_vars(&uri, request).map_err(ServerError::VarError)?;
             let proxy_headers = replace_dynamic_vars_headers(&proxy_headers, request)
-                .map_err(ResponseError::VarError)?;
+                .map_err(ServerError::VarError)?;
 
             let mut response = proxy_pass(
-                parse_uri(&uri).map_err(ResponseError::UriParseError)?,
+                parse_uri(&uri).map_err(ServerError::UriParseError)?,
                 request,
                 matched_prefix_len,
                 proxy_headers,
                 upstreams,
             )
             .await
-            .map_err(ResponseError::ProxyError)?;
+            .map_err(ServerError::ProxyError)?;
 
             for (header_name, header_value) in headers {
                 response.headers.insert(header_name, header_value);
@@ -141,4 +153,99 @@ pub async fn construct_response<'a>(
             response
         }
     })
+}
+
+fn get_host(request: &Request) -> &str {
+    if !request.start_line.uri.host().is_empty() {
+        &request.start_line.uri.host()
+    } else {
+        let host_port = &request.headers["Host"];
+        if let Some(host_end) = host_port.find(':') {
+            &host_port[..host_end]
+        } else {
+            host_port
+        }
+    }
+}
+
+async fn process_request(
+    socket: &mut TcpStream,
+    ip: IpAddr,
+    server: Arc<Server>,
+    upstreams: Arc<HashMap<String, Upstream>>,
+) -> Result<(), ServerError> {
+    let mut reader = BufReader::new(&mut *socket);
+    let request = parse_request(&mut reader, ip)
+        .await
+        .map_err(ServerError::RequestParseError)?;
+
+    let host = get_host(&request);
+    if !server.domain_names.iter().any(|name| name == host) && !server.is_default {
+        return Ok(());
+    }
+
+    let route =
+        if let Some(route) = find_matching_route(server.as_ref(), request.start_line.uri.path()) {
+            route
+        } else {
+            return Ok(());
+        };
+
+    let mut writer = BufWriter::new(socket);
+    write_response(
+        &mut writer,
+        &construct_response(route, &request, upstreams).await?,
+    )
+    .await
+    .map_err(ServerError::ResponseError)?;
+
+    Ok(())
+}
+
+pub async fn process_connection(
+    socket: &mut TcpStream,
+    ip: IpAddr,
+    server: Arc<Server>,
+    upstreams: Arc<HashMap<String, Upstream>>,
+) {
+    match process_request(socket, ip, server, upstreams).await {
+        Ok(()) => {}
+        Err(ServerError::RequestParseError(err)) => {
+            println!("Bad request {err}");
+
+            let mut writer = BufWriter::new(socket);
+            if let Err(err) = write_response(
+                &mut writer,
+                &Response {
+                    status: 400,
+                    headers: HashMap::new(),
+                    body: Vec::new(),
+                },
+            )
+            .await
+            {
+                println!("Io error while responding: {err}")
+            }
+        }
+        Err(ServerError::ResponseError(err)) => {
+            println!("Io error while responding: {err}")
+        }
+        Err(err) => {
+            println!("{err}");
+
+            let mut writer = BufWriter::new(socket);
+            if let Err(err) = write_response(
+                &mut writer,
+                &Response {
+                    status: 500,
+                    headers: HashMap::new(),
+                    body: Vec::new(),
+                },
+            )
+            .await
+            {
+                println!("Io error while responding: {err}")
+            }
+        }
+    }
 }
