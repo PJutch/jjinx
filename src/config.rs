@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::Ipv4Addr, time::Duration};
+use std::{collections::HashMap, net::Ipv4Addr, path::PathBuf, time::Duration};
 
 mod error;
 pub use error::ParseError;
@@ -45,10 +45,15 @@ pub struct Server {
     pub ip: Option<Ipv4Addr>,
     pub domain_names: Vec<String>,
     pub is_default: bool,
+
     pub routes: Vec<Route>,
+
     pub header_timeout: Option<Duration>,
     pub body_timeout: Option<Duration>,
     pub send_timeout: Option<Duration>,
+
+    pub cert_path: Option<PathBuf>,
+    pub keys_path: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq)]

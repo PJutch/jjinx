@@ -112,6 +112,8 @@ mod tests {
             header_timeout: None,
             body_timeout: None,
             send_timeout: None,
+            cert_path: None,
+            keys_path: None,
         };
 
         assert_eq!(

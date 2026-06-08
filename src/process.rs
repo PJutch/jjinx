@@ -17,8 +17,7 @@ use crate::vars::{VarError, replace_dynamic_vars, replace_dynamic_vars_headers};
 
 use std::net::IpAddr;
 
-use tokio::io::{BufReader, BufWriter};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
 
 fn read_file(path: &str) -> Result<Vec<u8>, io::Error> {
     let mut result = Vec::new();
@@ -169,8 +168,8 @@ fn get_host(request: &Request) -> &str {
     }
 }
 
-async fn process_request(
-    socket: &mut TcpStream,
+async fn process_request<Stream: AsyncRead + AsyncWrite + Unpin>(
+    socket: &mut Stream,
     ip: IpAddr,
     server: Arc<Server>,
     upstreams: Arc<HashMap<String, Upstream>>,
@@ -209,8 +208,8 @@ async fn process_request(
     Ok(())
 }
 
-pub async fn process_connection(
-    socket: &mut TcpStream,
+pub async fn process_connection<Stream: AsyncRead + AsyncWrite + Unpin>(
+    socket: &mut Stream,
     ip: IpAddr,
     server: Arc<Server>,
     upstreams: Arc<HashMap<String, Upstream>>,

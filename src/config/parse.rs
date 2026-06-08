@@ -1,5 +1,6 @@
 use crate::config::{Balancing, Config, Upstream};
 use crate::vars::replace_static_vars;
+use std::path::PathBuf;
 use std::time::Duration;
 use std::{collections::HashMap, io::BufRead};
 
@@ -279,6 +280,24 @@ fn parse_server_config<Reader: BufRead>(
                     return Err(ParseError::DuplicateField(token));
                 }
             }
+            "ssl_cert" => {
+                let cert_path = PathBuf::from(next_token(reader)?);
+
+                if server.cert_path.is_none() {
+                    server.cert_path = Some(cert_path);
+                } else {
+                    return Err(ParseError::DuplicateField(token));
+                }
+            }
+            "ssl_keys" => {
+                let keys_path = PathBuf::from(next_token(reader)?);
+
+                if server.keys_path.is_none() {
+                    server.keys_path = Some(keys_path);
+                } else {
+                    return Err(ParseError::DuplicateField(token));
+                }
+            }
             "set" => {
                 let (var, value) = parse_set(reader, &[&vars, global_vars])?;
                 vars.insert(var, value);
@@ -289,6 +308,13 @@ fn parse_server_config<Reader: BufRead>(
             _ => return Err(ParseError::UnknownField(token)),
         }
     }
+
+    if server.cert_path.is_some() && server.keys_path.is_none() {
+        return Err(ParseError::MissingField("key_path".to_owned()));
+    } else if server.cert_path.is_none() && server.keys_path.is_some() {
+        return Err(ParseError::MissingField("cert_path".to_owned()));
+    }
+
     Ok(server)
 }
 
@@ -534,6 +560,8 @@ mod tests {
                         header_timeout: None,
                         body_timeout: None,
                         send_timeout: None,
+                        cert_path: None,
+                        keys_path: None,
                     },
                     Server {
                         port: Some(8080),
@@ -553,6 +581,8 @@ mod tests {
                         header_timeout: None,
                         body_timeout: None,
                         send_timeout: None,
+                        cert_path: None,
+                        keys_path: None
                     }
                 ]),
                 upstreams: HashMap::from([(
