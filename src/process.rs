@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use thiserror::Error;
+use tokio_rustls::TlsConnector;
 
 use crate::config::{Content, Server};
 use crate::http::{self, ParseError, Request, Response, SendError, parse_request, write_response};
@@ -45,6 +46,7 @@ async fn construct_response<'a>(
     matching: Match<'a>,
     request: &Request,
     upstreams: Arc<HashMap<String, Upstream>>,
+    connector: Arc<TlsConnector>,
 ) -> Result<Response, ServerError> {
     let Match {
         route,
@@ -142,6 +144,7 @@ async fn construct_response<'a>(
                 matched_prefix_len,
                 proxy_headers,
                 upstreams,
+                connector,
             )
             .await
             .map_err(ServerError::ProxyError)?;
@@ -173,6 +176,7 @@ async fn process_request<Stream: AsyncRead + AsyncWrite + Unpin>(
     ip: IpAddr,
     server: Arc<Server>,
     upstreams: Arc<HashMap<String, Upstream>>,
+    connector: Arc<TlsConnector>,
 ) -> Result<(), ServerError> {
     let mut reader = BufReader::new(&mut *socket);
     let request = parse_request(
@@ -199,7 +203,7 @@ async fn process_request<Stream: AsyncRead + AsyncWrite + Unpin>(
     let mut writer = BufWriter::new(socket);
     write_response(
         &mut writer,
-        &construct_response(route, &request, upstreams).await?,
+        &construct_response(route, &request, upstreams, connector).await?,
         server.send_timeout.unwrap_or(Duration::from_secs(60)),
     )
     .await
@@ -213,10 +217,11 @@ pub async fn process_connection<Stream: AsyncRead + AsyncWrite + Unpin>(
     ip: IpAddr,
     server: Arc<Server>,
     upstreams: Arc<HashMap<String, Upstream>>,
+    connector: Arc<TlsConnector>,
 ) {
     let send_timeout = server.send_timeout;
 
-    match process_request(socket, ip, server, upstreams).await {
+    match process_request(socket, ip, server, upstreams, connector).await {
         Ok(()) => {}
         Err(err @ ServerError::RequestParseError(ParseError::Timeout)) => {
             println!("Timeout {err}");
@@ -237,7 +242,7 @@ pub async fn process_connection<Stream: AsyncRead + AsyncWrite + Unpin>(
             }
         }
         Err(ServerError::RequestParseError(err)) => {
-            println!("Bad request {err}");
+            println!("Bad request: {err}");
 
             let mut writer = BufWriter::new(socket);
             if let Err(err) = write_response(

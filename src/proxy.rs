@@ -7,12 +7,16 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use std::u32;
 
+use rustls::pki_types::{DnsName, InvalidDnsNameError, ServerName};
+use rustls::{ClientConfig, RootCertStore};
+use rustls_native_certs::load_native_certs;
 use scopeguard::defer;
 use std::io;
 use thiserror::Error;
-use tokio::io::{BufReader, BufWriter};
+use tokio::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
+use tokio_rustls::TlsConnector;
 use twox_hash::XxHash64;
 
 use crate::config;
@@ -30,6 +34,8 @@ pub enum ProxyError {
     VarError(VarError),
     #[error("Timeout")]
     Timeout,
+    #[error("Invalid domain name")]
+    DomainNameError(InvalidDnsNameError),
 }
 
 enum Balancer {
@@ -190,6 +196,39 @@ pub fn make_upstreams(config: HashMap<String, config::Upstream>) -> HashMap<Stri
         .collect()
 }
 
+pub fn make_connector() -> Result<TlsConnector, rustls::Error> {
+    let mut root_cert_store = RootCertStore::empty();
+    for cert in load_native_certs().certs {
+        root_cert_store.add(cert)?;
+    }
+
+    let config = ClientConfig::builder()
+        .with_root_certificates(root_cert_store)
+        .with_no_client_auth();
+    Ok(TlsConnector::from(Arc::new(config)))
+}
+
+async fn exchange_data<Stream: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut Stream,
+    request: &Request,
+    send_timeout: Duration,
+    header_timeout: Duration,
+    body_timeout: Duration,
+) -> Result<Response, ProxyError> {
+    write_request(&mut BufWriter::new(&mut *stream), &request, send_timeout)
+        .await
+        .map_err(|err| match err {
+            SendError::IoError(err) => ProxyError::IoError(err),
+            SendError::Timeout => ProxyError::Timeout,
+        })?;
+
+    Ok(
+        parse_response(&mut BufReader::new(stream), header_timeout, body_timeout)
+            .await
+            .map_err(ProxyError::ResponseParseError)?,
+    )
+}
+
 async fn proxy_pass_to(
     uri: &Uri,
     host: &str,
@@ -200,6 +239,7 @@ async fn proxy_pass_to(
     header_timeout: Duration,
     body_timeout: Duration,
     send_timeout: Duration,
+    connector: Option<&TlsConnector>,
 ) -> Result<Response, ProxyError> {
     let mut proxy_request = request.clone();
     proxy_request.start_line.version = HttpVersion(1, 1);
@@ -222,29 +262,46 @@ async fn proxy_pass_to(
         proxy_request.headers.insert(header_name, header_value);
     }
 
-    let mut stream = timeout(connect_timeout, TcpStream::connect(host))
+    let mut socket = timeout(connect_timeout, TcpStream::connect(host))
         .await
         .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::IoError)?;
 
-    write_request(
-        &mut BufWriter::new(&mut stream),
-        &proxy_request,
-        send_timeout,
-    )
-    .await
-    .map_err(|err| match err {
-        SendError::IoError(err) => ProxyError::IoError(err),
-        SendError::Timeout => ProxyError::Timeout,
-    })?;
+    let domain = &host[..host.find(':').unwrap_or(host.len())];
+    let domain = if let Ok(ip) = domain.parse::<IpAddr>() {
+        ServerName::IpAddress(ip.into())
+    } else {
+        ServerName::DnsName(
+            DnsName::try_from_str(domain)
+                .map_err(ProxyError::DomainNameError)?
+                .to_owned(),
+        )
+    };
 
-    Ok(parse_response(
-        &mut BufReader::new(&mut stream),
-        header_timeout,
-        body_timeout,
-    )
-    .await
-    .map_err(ProxyError::ResponseParseError)?)
+    if let Some(connector) = connector {
+        let mut stream = connector
+            .connect(domain, socket)
+            .await
+            .map_err(ProxyError::IoError)?;
+
+        exchange_data(
+            &mut BufWriter::new(&mut stream),
+            &proxy_request,
+            send_timeout,
+            header_timeout,
+            body_timeout,
+        )
+        .await
+    } else {
+        exchange_data(
+            &mut BufWriter::new(&mut socket),
+            &proxy_request,
+            send_timeout,
+            header_timeout,
+            body_timeout,
+        )
+        .await
+    }
 }
 
 pub async fn proxy_pass(
@@ -253,6 +310,7 @@ pub async fn proxy_pass(
     matching_prefix_len: usize,
     new_headers: HashMap<String, String>,
     upstreams: Arc<HashMap<String, Upstream>>,
+    connector: Arc<TlsConnector>,
 ) -> Result<Response, ProxyError> {
     let upstream = upstreams.get(uri.domain()).map(|upstream| {
         let server = upstream.get_server(request.ip);
@@ -290,6 +348,11 @@ pub async fn proxy_pass(
         upstream
             .map(|pair| pair.0.send_timeout)
             .unwrap_or(Duration::from_secs(60)),
+        if uri.scheme() == "https" {
+            Some(connector.as_ref())
+        } else {
+            None
+        },
     )
     .await
     {

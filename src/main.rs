@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use futures::future::join_all;
 use rustls::ServerConfig;
-use rustls::pki_types::PrivateKeyDer;
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
@@ -24,7 +23,7 @@ use process::process_connection;
 
 mod route_matching;
 
-use crate::proxy::{Upstream, make_upstreams};
+use crate::proxy::{Upstream, make_connector, make_upstreams};
 
 mod proxy;
 
@@ -57,6 +56,8 @@ async fn run_server(
         None
     };
 
+    let connector = Arc::new(make_connector()?);
+
     let listener = TcpListener::bind(SocketAddrV4::new(ip, port)).await?;
 
     let server = Arc::new(server);
@@ -66,18 +67,21 @@ async fn run_server(
         let server = server.clone();
         let upstreams = upstreams.clone();
         let acceptor = acceptor.clone();
+        let connector = connector.clone();
+
         tokio::spawn(async move {
             if let Some(acceptor) = acceptor {
                 match acceptor.accept(socket).await {
                     Ok(mut stream) => {
-                        process_connection(&mut stream, addr.ip(), server, upstreams).await;
+                        process_connection(&mut stream, addr.ip(), server, upstreams, connector)
+                            .await;
                     }
                     Err(err) => {
                         println!("Tls accept error: {err}");
                     }
                 }
             } else {
-                process_connection(&mut socket, addr.ip(), server, upstreams).await;
+                process_connection(&mut socket, addr.ip(), server, upstreams, connector).await;
             };
         });
     }
