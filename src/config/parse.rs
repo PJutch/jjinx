@@ -600,7 +600,6 @@ mod tests {
                         header_timeout: None,
                         body_timeout: None,
                         send_timeout: None,
-                        ssl: false,
                     },
                 )]),
             }

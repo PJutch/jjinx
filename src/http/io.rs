@@ -168,30 +168,42 @@ pub async fn skip_whitespace<Reader: AsyncBufRead + Unpin>(
     }
 }
 
-pub async fn read_n_bytes<Reader: AsyncBufRead + Unpin>(
+pub async fn read_n_bytes_to<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
     n: usize,
     per_read_timeout: Duration,
-) -> Result<Vec<u8>, ParseError> {
-    let mut result = Vec::new();
-    while result.len() < n {
+    output: &mut Vec<u8>,
+) -> Result<(), ParseError> {
+    let inital_len = output.len();
+    while output.len() - inital_len < n {
         let mut buf = timeout(per_read_timeout, reader.fill_buf())
             .await
             .map_err(|_| ParseError::Timeout)?
             .map_err(ParseError::IoError)?;
 
         if buf.is_empty() {
-            return Ok(result);
+            return Ok(());
         }
 
-        if buf.len() > n - result.len() {
-            buf = &buf[..n - result.len()]
+        let remainging_len = n - (output.len() - inital_len);
+        if buf.len() > remainging_len {
+            buf = &buf[..remainging_len]
         }
 
-        result.extend_from_slice(buf);
+        output.extend_from_slice(buf);
 
         let len = buf.len();
         reader.consume(len);
     }
+    Ok(())
+}
+
+pub async fn read_n_bytes<Reader: AsyncBufRead + Unpin>(
+    reader: &mut Reader,
+    n: usize,
+    per_read_timeout: Duration,
+) -> Result<Vec<u8>, ParseError> {
+    let mut result = Vec::new();
+    read_n_bytes_to(reader, n, per_read_timeout, &mut result).await?;
     Ok(result)
 }

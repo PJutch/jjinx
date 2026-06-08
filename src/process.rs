@@ -241,6 +241,24 @@ pub async fn process_connection<Stream: AsyncRead + AsyncWrite + Unpin>(
                 println!("Response error: {err}")
             }
         }
+        Err(ServerError::RequestParseError(ParseError::UnknownTransferEncoding(encoding))) => {
+            println!("Unknown transfer encoding: {encoding}");
+
+            let mut writer = BufWriter::new(socket);
+            if let Err(err) = write_response(
+                &mut writer,
+                &Response {
+                    status: 501,
+                    headers: HashMap::new(),
+                    body: Vec::new(),
+                },
+                send_timeout.unwrap_or(Duration::from_secs(60)),
+            )
+            .await
+            {
+                println!("Response error: {err}")
+            }
+        }
         Err(ServerError::RequestParseError(err)) => {
             println!("Bad request: {err}");
 

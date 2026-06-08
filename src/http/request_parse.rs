@@ -42,7 +42,7 @@ pub async fn parse_request<Reader: AsyncBufRead + Unpin>(
     header_timeout: Duration,
     body_timeout: Duration,
 ) -> Result<Request, ParseError> {
-    let (start_line, headers) = timeout(header_timeout, async {
+    let (start_line, mut headers) = timeout(header_timeout, async {
         let start_line = parse_start_line(reader).await?;
         try_skip_newline(reader).await?;
         let headers = parse_headers(reader).await?;
@@ -52,7 +52,7 @@ pub async fn parse_request<Reader: AsyncBufRead + Unpin>(
     .await
     .map_err(|_| ParseError::Timeout)??;
 
-    let body = parse_body(reader, &headers, body_timeout).await?;
+    let body = parse_body(reader, &mut headers, body_timeout).await?;
 
     Ok(Request {
         ip,

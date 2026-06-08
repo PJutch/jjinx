@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use std::io;
+use std::{io, str};
 use std::num::ParseIntError;
 use std::string::FromUtf8Error;
 
@@ -16,6 +16,8 @@ pub enum ParseError {
     IoError(io::Error),
     #[error("Utf8 error: {0}")]
     Utf8Error(FromUtf8Error),
+    #[error("Utf8 error: {0}")]
+    Utf8ErrorStr(str::Utf8Error),
     #[error("Expected a digit")]
     ExpectedDigit,
     #[error("Parse int error: {0}")]
@@ -36,6 +38,8 @@ pub enum ParseError {
     UriError(uri::ParseError),
     #[error("Timeout")]
     Timeout,
+    #[error("Unkwnown transfer encoding: {0}")]
+    UnknownTransferEncoding(String),
 }
 
 #[derive(Debug, Error)]

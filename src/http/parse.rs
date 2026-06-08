@@ -1,11 +1,15 @@
+use crate::http::io::{read_n_bytes_to, skip_until_inclusive};
+
 use super::io::{
     is_whitespace, peek_byte, read_byte, read_digit, read_n_bytes, read_token, read_until,
     skip_fixed, skip_whitespace, try_skip_newline,
 };
 use super::{HttpVersion, ParseError};
+
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::io::AsyncBufRead;
+use tokio::time::timeout;
 
 pub async fn parse_http_version<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
@@ -75,17 +79,71 @@ pub async fn parse_headers<Reader: AsyncBufRead + Unpin>(
     }
 }
 
+async fn parse_chunked_body<Reader: AsyncBufRead + Unpin>(
+    reader: &mut Reader,
+    per_read_timeout: Duration,
+) -> Result<Vec<u8>, ParseError> {
+    let mut result = Vec::new();
+    loop {
+        let mut length = Vec::new();
+
+        timeout(per_read_timeout, async {
+            read_until(reader, |c| c == b' ' || c == b'\r', &mut length).await?;
+            skip_until_inclusive(reader, |c| c == b'\n').await?;
+            Ok::<_, ParseError>(())
+        })
+        .await
+        .map_err(|_| ParseError::Timeout)??;
+
+        if length.is_empty() {
+            break;
+        }
+
+        let length = str::from_utf8(&length).map_err(ParseError::Utf8ErrorStr)?;
+        let length = usize::from_str_radix(length, 16).map_err(ParseError::ParseIntError)?;
+        if length == 0 {
+            break;
+        }
+
+        read_n_bytes_to(reader, length, per_read_timeout, &mut result).await?;
+    }
+
+    let mut skip_trailing = true;
+    while  skip_trailing {
+        timeout(per_read_timeout, async {
+            if peek_byte(reader).await?.is_none_or(|c| c == b'\r') {
+                skip_trailing = false;
+            }
+
+            skip_until_inclusive(reader, |c| c == b'\n').await?;
+            Ok(())
+        })
+        .await
+        .map_err(|_| ParseError::Timeout)??;
+    }
+
+    Ok(result)
+}
+
 pub async fn parse_body<Reader: AsyncBufRead + Unpin>(
     reader: &mut Reader,
-    headers: &HashMap<String, String>,
-    timeout: Duration
+    headers: &mut HashMap<String, String>,
+    timeout: Duration,
 ) -> Result<Vec<u8>, ParseError> {
-    Ok(if let Some(data) = headers.get("Content-Length") {
-        let len = data.parse().map_err(ParseError::ParseIntError)?;
-        read_n_bytes(reader, len, timeout).await?
-    } else if let Some(_) = headers.get("Transfer-Encoding") {
-        todo!("Handle Transfer-Encoding");
-    } else {
-        Vec::new()
-    })
+    Ok(
+        if let Some(transfer_encoding) = headers.remove("Transfer-Encoding") {
+            if transfer_encoding == "chunked" {
+                parse_chunked_body(reader, timeout).await?
+            } else {
+                return Err(ParseError::UnknownTransferEncoding(
+                    transfer_encoding.clone(),
+                ));
+            }
+        } else if let Some(data) = headers.get("Content-Length") {
+            let len = data.parse().map_err(ParseError::ParseIntError)?;
+            read_n_bytes(reader, len, timeout).await?
+        } else {
+            Vec::new()
+        },
+    )
 }

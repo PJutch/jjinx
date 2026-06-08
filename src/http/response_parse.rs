@@ -12,7 +12,7 @@ pub async fn parse_response<Reader: AsyncBufRead + Unpin>(
     header_timeout: Duration,
     body_timeout: Duration,
 ) -> Result<Response, ParseError> {
-    let (status, headers) = timeout(header_timeout, async {
+    let (status, mut headers) = timeout(header_timeout, async {
         let http_version = parse_http_version(reader).await?;
         if http_version.0 != 1 {
             return Err(ParseError::InvalidHttpVersion(http_version));
@@ -38,7 +38,7 @@ pub async fn parse_response<Reader: AsyncBufRead + Unpin>(
     .await
     .map_err(|_| ParseError::Timeout)??;
 
-    let body = parse_body(reader, &headers, body_timeout).await?;
+    let body = parse_body(reader, &mut headers, body_timeout).await?;
 
     Ok(Response {
         status,
