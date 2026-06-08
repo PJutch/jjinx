@@ -1,20 +1,16 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
-use std::io::BufReader;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use futures::future::join_all;
-use rustls::ServerConfig;
-use thiserror::Error;
 use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
 
 mod http;
 
 mod config;
-use config::{Server, parse_config};
+use config::parse_config;
 
 mod uri;
 
@@ -23,48 +19,33 @@ use process::process_connection;
 
 mod route_matching;
 
-use crate::proxy::{Upstream, make_connector, make_upstreams};
+use crate::config::ServerGroup;
+use crate::proxy::{Upstream, make_upstreams};
 
 mod proxy;
 
 mod vars;
 
-#[derive(Debug, Error)]
-#[error("No private keys in the file")]
-struct NoPrivateKey;
+mod tls;
+use tls::{make_acceptor, make_connector};
 
-async fn run_server(
-    server: Server,
+async fn handle_ip_port(
+    ip: IpAddr,
+    port: u16,
+    servers: ServerGroup,
     upstreams: Arc<HashMap<String, Upstream>>,
 ) -> Result<(), Box<dyn Error>> {
-    let ip = server.ip.unwrap_or(Ipv4Addr::from_bits(0));
-    let port = server.port.unwrap_or(8080);
+    let acceptor = make_acceptor(&servers)?;
+    let connector = make_connector()?;
 
-    let acceptor = if let Some(cert_path) = &server.cert_path {
-        let mut cert_reader = BufReader::new(File::open(cert_path)?);
-        let certs = rustls_pemfile::certs(&mut cert_reader).collect::<Result<_, _>>()?;
+    let listener = TcpListener::bind(SocketAddr::new(ip, port)).await?;
 
-        let mut keys_reader = BufReader::new(File::open(server.keys_path.as_ref().unwrap())?);
-        let key = rustls_pemfile::private_key(&mut keys_reader)?.ok_or(NoPrivateKey)?;
+    let servers = Arc::new(servers);
 
-        let config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)?;
-
-        Some(TlsAcceptor::from(Arc::new(config)))
-    } else {
-        None
-    };
-
-    let connector = Arc::new(make_connector()?);
-
-    let listener = TcpListener::bind(SocketAddrV4::new(ip, port)).await?;
-
-    let server = Arc::new(server);
     loop {
         let (mut socket, addr) = listener.accept().await?;
 
-        let server = server.clone();
+        let servers = servers.clone();
         let upstreams = upstreams.clone();
         let acceptor = acceptor.clone();
         let connector = connector.clone();
@@ -73,7 +54,7 @@ async fn run_server(
             if let Some(acceptor) = acceptor {
                 match acceptor.accept(socket).await {
                     Ok(mut stream) => {
-                        process_connection(&mut stream, addr.ip(), server, upstreams, connector)
+                        process_connection(&mut stream, addr.ip(), servers, upstreams, connector)
                             .await;
                     }
                     Err(err) => {
@@ -81,7 +62,7 @@ async fn run_server(
                     }
                 }
             } else {
-                process_connection(&mut socket, addr.ip(), server, upstreams, connector).await;
+                process_connection(&mut socket, addr.ip(), servers, upstreams, connector).await;
             };
         });
     }
@@ -93,10 +74,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let upstreams = Arc::new(make_upstreams(config.upstreams));
 
-    join_all(config.servers.into_iter().map(|server| {
+    join_all(config.servers.into_iter().map(|((ip, port), servers)| {
         let upstreams = upstreams.clone();
         tokio::spawn(async move {
-            if let Err(err) = run_server(server, upstreams).await {
+            if let Err(err) = handle_ip_port(ip, port, servers, upstreams).await {
                 println!("Error starting a server: {err}");
             }
         })

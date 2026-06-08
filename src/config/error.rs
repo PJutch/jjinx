@@ -30,4 +30,6 @@ pub enum ParseError {
     UnknownEscape(String),
     #[error("Missing field: {0}")]
     MissingField(String),
+    #[error("Either all or none servers hould be HTTPS for an ip and port")]
+    NotAllHttps,
 }

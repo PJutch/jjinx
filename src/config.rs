@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::Ipv4Addr, path::PathBuf, time::Duration};
+use std::{collections::HashMap, net::IpAddr, path::PathBuf, time::Duration};
 
 mod error;
 pub use error::ParseError;
@@ -42,7 +42,7 @@ pub struct Route {
 #[derive(Debug, Default, PartialEq)]
 pub struct Server {
     pub port: Option<u16>,
-    pub ip: Option<Ipv4Addr>,
+    pub ip: Option<IpAddr>,
     pub domain_names: Vec<String>,
     pub is_default: bool,
 
@@ -54,6 +54,12 @@ pub struct Server {
 
     pub cert_path: Option<PathBuf>,
     pub keys_path: Option<PathBuf>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct ServerGroup {
+    pub servers: Vec<Server>,
+    pub default: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -79,6 +85,6 @@ pub struct Upstream {
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Config {
-    pub servers: Vec<Server>,
+    pub servers: HashMap<(IpAddr, u16), ServerGroup>,
     pub upstreams: HashMap<String, Upstream>,
 }

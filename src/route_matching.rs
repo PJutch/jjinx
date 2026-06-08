@@ -67,7 +67,7 @@ pub fn find_matching_route<'a>(server: &'a Server, path: &str) -> Option<Match<'
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, time::Duration};
+    use std::collections::HashMap;
 
     use super::find_matching_route;
     use crate::config::{Content, Route, Server, UriMatcher};

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-use std::fs;
-use std::fs::File;
+use std::fs::{File, self};
 use std::io;
 use std::io::Read;
 use std::sync::Arc;
@@ -9,7 +8,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio_rustls::TlsConnector;
 
-use crate::config::{Content, Server};
+use crate::config::{Content, ServerGroup};
 use crate::http::{self, ParseError, Request, Response, SendError, parse_request, write_response};
 use crate::proxy::{ProxyError, Upstream, proxy_pass};
 use crate::route_matching::{Match, find_matching_route};
@@ -46,7 +45,7 @@ async fn construct_response<'a>(
     matching: Match<'a>,
     request: &Request,
     upstreams: Arc<HashMap<String, Upstream>>,
-    connector: Arc<TlsConnector>,
+    connector: TlsConnector,
 ) -> Result<Response, ServerError> {
     let Match {
         route,
@@ -174,27 +173,33 @@ fn get_host(request: &Request) -> &str {
 async fn process_request<Stream: AsyncRead + AsyncWrite + Unpin>(
     socket: &mut Stream,
     ip: IpAddr,
-    server: Arc<Server>,
+    servers: Arc<ServerGroup>,
     upstreams: Arc<HashMap<String, Upstream>>,
-    connector: Arc<TlsConnector>,
+    connector: TlsConnector,
 ) -> Result<(), ServerError> {
     let mut reader = BufReader::new(&mut *socket);
     let request = parse_request(
         &mut reader,
         ip,
-        server.header_timeout.unwrap_or(Duration::from_secs(60)),
-        server.body_timeout.unwrap_or(Duration::from_secs(60)),
+        servers.servers[servers.default]
+            .header_timeout
+            .unwrap_or(Duration::from_secs(60)),
+        servers.servers[servers.default]
+            .body_timeout
+            .unwrap_or(Duration::from_secs(60)),
     )
     .await
     .map_err(ServerError::RequestParseError)?;
 
     let host = get_host(&request);
-    if !server.domain_names.iter().any(|name| name == host) && !server.is_default {
-        return Ok(());
-    }
+    let server = servers
+        .servers
+        .iter()
+        .find(|server| server.domain_names.iter().any(|name| name == host))
+        .unwrap_or(&servers.servers[servers.default]);
 
     let route =
-        if let Some(route) = find_matching_route(server.as_ref(), request.start_line.uri.path()) {
+        if let Some(route) = find_matching_route(server, request.start_line.uri.path()) {
             route
         } else {
             return Ok(());
@@ -215,13 +220,15 @@ async fn process_request<Stream: AsyncRead + AsyncWrite + Unpin>(
 pub async fn process_connection<Stream: AsyncRead + AsyncWrite + Unpin>(
     socket: &mut Stream,
     ip: IpAddr,
-    server: Arc<Server>,
+    servers: Arc<ServerGroup>,
     upstreams: Arc<HashMap<String, Upstream>>,
-    connector: Arc<TlsConnector>,
+    connector: TlsConnector,
 ) {
-    let send_timeout = server.send_timeout;
+    let send_timeout = servers.servers[servers.default]
+        .send_timeout
+        .unwrap_or(Duration::from_secs(60));
 
-    match process_request(socket, ip, server, upstreams, connector).await {
+    match process_request(socket, ip, servers, upstreams, connector).await {
         Ok(()) => {}
         Err(err @ ServerError::RequestParseError(ParseError::Timeout)) => {
             println!("Timeout {err}");
@@ -234,7 +241,7 @@ pub async fn process_connection<Stream: AsyncRead + AsyncWrite + Unpin>(
                     headers: HashMap::new(),
                     body: Vec::new(),
                 },
-                send_timeout.unwrap_or(Duration::from_secs(60)),
+                send_timeout,
             )
             .await
             {
@@ -252,7 +259,7 @@ pub async fn process_connection<Stream: AsyncRead + AsyncWrite + Unpin>(
                     headers: HashMap::new(),
                     body: Vec::new(),
                 },
-                send_timeout.unwrap_or(Duration::from_secs(60)),
+                send_timeout,
             )
             .await
             {
@@ -270,7 +277,7 @@ pub async fn process_connection<Stream: AsyncRead + AsyncWrite + Unpin>(
                     headers: HashMap::new(),
                     body: Vec::new(),
                 },
-                send_timeout.unwrap_or(Duration::from_secs(60)),
+                send_timeout,
             )
             .await
             {
@@ -291,7 +298,7 @@ pub async fn process_connection<Stream: AsyncRead + AsyncWrite + Unpin>(
                     headers: HashMap::new(),
                     body: Vec::new(),
                 },
-                send_timeout.unwrap_or(Duration::from_secs(60)),
+                send_timeout,
             )
             .await
             {
