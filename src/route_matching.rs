@@ -114,6 +114,7 @@ mod tests {
             send_timeout: None,
             cert_path: None,
             keys_path: None,
+            error_pages: HashMap::new(),
         };
 
         assert_eq!(

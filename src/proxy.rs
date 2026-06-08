@@ -8,8 +8,6 @@ use std::time::{Duration, Instant};
 use std::u32;
 
 use rustls::pki_types::{DnsName, InvalidDnsNameError, ServerName};
-use rustls::{ClientConfig, RootCertStore};
-use rustls_native_certs::load_native_certs;
 use scopeguard::defer;
 use std::io;
 use thiserror::Error;

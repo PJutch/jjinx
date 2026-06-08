@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{File, self};
+use std::fs::{self, File};
 use std::io;
 use std::io::Read;
 use std::sync::Arc;
@@ -8,8 +8,8 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio_rustls::TlsConnector;
 
-use crate::config::{Content, ServerGroup};
-use crate::http::{self, ParseError, Request, Response, SendError, parse_request, write_response};
+use crate::config::{Content, Server, ServerGroup};
+use crate::http::{ParseError, Request, Response, parse_request, write_response};
 use crate::proxy::{ProxyError, Upstream, proxy_pass};
 use crate::route_matching::{Match, find_matching_route};
 use crate::uri::{self, parse_uri};
@@ -27,8 +27,6 @@ fn read_file(path: &str) -> Result<Vec<u8>, io::Error> {
 
 #[derive(Debug, Error)]
 enum ServerError {
-    #[error("Bad request: {0}")]
-    RequestParseError(http::ParseError),
     #[error("Io error: {0}")]
     IoError(io::Error),
     #[error("Variable error: {0}")]
@@ -37,8 +35,8 @@ enum ServerError {
     UriParseError(uri::ParseError),
     #[error("Proxy error: {0}")]
     ProxyError(ProxyError),
-    #[error("Error writing response: {0}")]
-    ResponseError(SendError),
+    #[error("Not found")]
+    NotFound,
 }
 
 async fn construct_response<'a>(
@@ -74,11 +72,7 @@ async fn construct_response<'a>(
                         body: Vec::new(),
                     }
                 } else {
-                    Response {
-                        status: 404,
-                        headers: headers,
-                        body: Vec::new(),
-                    }
+                    return Err(ServerError::NotFound);
                 }
             }
             Some(status) => Response {
@@ -111,6 +105,10 @@ async fn construct_response<'a>(
                     body = read_file(&file).map_err(ServerError::IoError)?;
                     found = true;
                 }
+            }
+
+            if !found {
+                return Err(ServerError::NotFound);
             }
 
             Response {
@@ -170,15 +168,64 @@ fn get_host(request: &Request) -> &str {
     }
 }
 
-async fn process_request<Stream: AsyncRead + AsyncWrite + Unpin>(
+async fn construct_error_page(
+    status: i16,
+    server: &Server,
+    request: &Request,
+    upstreams: Arc<HashMap<String, Upstream>>,
+    connector: TlsConnector,
+) -> Option<Response> {
+    let error_page = server.error_pages.get(&status)?;
+    let route = find_matching_route(server, error_page)?;
+
+    let mut response = construct_response(route, &request, upstreams, connector)
+        .await
+        .ok()?;
+
+    if response.status == 200 {
+        response.status = status;
+    }
+
+    Some(response)
+}
+
+async fn write_error<Writer: AsyncWrite + Unpin>(
+    socket: &mut Writer,
+    status: i16,
+    server: &Server,
+    request: &Request,
+    upstreams: Arc<HashMap<String, Upstream>>,
+    connector: TlsConnector,
+) {
+    let mut writer = BufWriter::new(socket);
+    if let Err(err) = write_response(
+        &mut writer,
+        &construct_error_page(status, server, request, upstreams, connector)
+            .await
+            .unwrap_or_else(|| Response {
+                status: status,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            }),
+        server.send_timeout.unwrap_or(Duration::from_secs(60)),
+    )
+    .await
+    {
+        println!("Response error: {err}")
+    }
+}
+
+pub async fn process_connection<Stream: AsyncRead + AsyncWrite + Unpin>(
     socket: &mut Stream,
     ip: IpAddr,
     servers: Arc<ServerGroup>,
     upstreams: Arc<HashMap<String, Upstream>>,
     connector: TlsConnector,
-) -> Result<(), ServerError> {
+) {
+    let default_server = &servers.servers[servers.default];
+
     let mut reader = BufReader::new(&mut *socket);
-    let request = parse_request(
+    let request = match parse_request(
         &mut reader,
         ip,
         servers.servers[servers.default]
@@ -189,7 +236,48 @@ async fn process_request<Stream: AsyncRead + AsyncWrite + Unpin>(
             .unwrap_or(Duration::from_secs(60)),
     )
     .await
-    .map_err(ServerError::RequestParseError)?;
+    {
+        Ok(request) => request,
+        Err(ParseError::Timeout) => {
+            println!("Parse request: Timeout");
+            write_error(
+                socket,
+                408,
+                default_server,
+                &Request::empty(ip),
+                upstreams,
+                connector,
+            )
+            .await;
+            return;
+        }
+        Err(ParseError::UnknownTransferEncoding(encoding)) => {
+            println!("Unknown transfer encoding: {encoding}");
+            write_error(
+                socket,
+                501,
+                default_server,
+                &Request::empty(ip),
+                upstreams,
+                connector,
+            )
+            .await;
+            return;
+        }
+        Err(err) => {
+            println!("Bad request: {err}");
+            write_error(
+                socket,
+                400,
+                default_server,
+                &Request::empty(ip),
+                upstreams,
+                connector,
+            )
+            .await;
+            return;
+        }
+    };
 
     let host = get_host(&request);
     let server = servers
@@ -198,112 +286,40 @@ async fn process_request<Stream: AsyncRead + AsyncWrite + Unpin>(
         .find(|server| server.domain_names.iter().any(|name| name == host))
         .unwrap_or(&servers.servers[servers.default]);
 
-    let route =
-        if let Some(route) = find_matching_route(server, request.start_line.uri.path()) {
-            route
-        } else {
-            return Ok(());
+    let route = if let Some(route) = find_matching_route(server, request.start_line.uri.path()) {
+        route
+    } else {
+        println!("No location match {}", request.start_line.uri.full);
+        write_error(socket, 404, server, &request, upstreams, connector).await;
+        return;
+    };
+
+    let response =
+        match construct_response(route, &request, upstreams.clone(), connector.clone()).await {
+            Ok(response) => response,
+            Err(ServerError::NotFound) => {
+                println!("File not found");
+                write_error(socket, 404, server, &request, upstreams, connector).await;
+                return;
+            }
+            Err(err) => {
+                println!("Internal server error: {err}");
+                write_error(socket, 500, server, &request, upstreams, connector).await;
+                return;
+            }
         };
 
     let mut writer = BufWriter::new(socket);
-    write_response(
+    match write_response(
         &mut writer,
-        &construct_response(route, &request, upstreams, connector).await?,
+        &response,
         server.send_timeout.unwrap_or(Duration::from_secs(60)),
     )
     .await
-    .map_err(ServerError::ResponseError)?;
-
-    Ok(())
-}
-
-pub async fn process_connection<Stream: AsyncRead + AsyncWrite + Unpin>(
-    socket: &mut Stream,
-    ip: IpAddr,
-    servers: Arc<ServerGroup>,
-    upstreams: Arc<HashMap<String, Upstream>>,
-    connector: TlsConnector,
-) {
-    let send_timeout = servers.servers[servers.default]
-        .send_timeout
-        .unwrap_or(Duration::from_secs(60));
-
-    match process_request(socket, ip, servers, upstreams, connector).await {
+    {
         Ok(()) => {}
-        Err(err @ ServerError::RequestParseError(ParseError::Timeout)) => {
-            println!("Timeout {err}");
-
-            let mut writer = BufWriter::new(socket);
-            if let Err(err) = write_response(
-                &mut writer,
-                &Response {
-                    status: 408,
-                    headers: HashMap::new(),
-                    body: Vec::new(),
-                },
-                send_timeout,
-            )
-            .await
-            {
-                println!("Response error: {err}")
-            }
-        }
-        Err(ServerError::RequestParseError(ParseError::UnknownTransferEncoding(encoding))) => {
-            println!("Unknown transfer encoding: {encoding}");
-
-            let mut writer = BufWriter::new(socket);
-            if let Err(err) = write_response(
-                &mut writer,
-                &Response {
-                    status: 501,
-                    headers: HashMap::new(),
-                    body: Vec::new(),
-                },
-                send_timeout,
-            )
-            .await
-            {
-                println!("Response error: {err}")
-            }
-        }
-        Err(ServerError::RequestParseError(err)) => {
-            println!("Bad request: {err}");
-
-            let mut writer = BufWriter::new(socket);
-            if let Err(err) = write_response(
-                &mut writer,
-                &Response {
-                    status: 400,
-                    headers: HashMap::new(),
-                    body: Vec::new(),
-                },
-                send_timeout,
-            )
-            .await
-            {
-                println!("Response error: {err}")
-            }
-        }
-        Err(ServerError::ResponseError(err)) => {
-            println!("Io error while responding: {err}")
-        }
         Err(err) => {
-            println!("{err}");
-
-            let mut writer = BufWriter::new(socket);
-            if let Err(err) = write_response(
-                &mut writer,
-                &Response {
-                    status: 500,
-                    headers: HashMap::new(),
-                    body: Vec::new(),
-                },
-                send_timeout,
-            )
-            .await
-            {
-                println!("Response error: {err}")
-            }
+            println!("Io error while responding: {err}")
         }
     }
 }

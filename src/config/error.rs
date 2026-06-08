@@ -32,4 +32,6 @@ pub enum ParseError {
     MissingField(String),
     #[error("Either all or none servers hould be HTTPS for an ip and port")]
     NotAllHttps,
+    #[error("Too few argumnets for directive {0}")]
+    TooFewArgs(String),
 }

@@ -38,6 +38,21 @@ pub struct Request {
     pub body: Vec<u8>,
 }
 
+impl Request {
+    pub fn empty(ip: IpAddr) -> Self {
+        Self {
+            ip,
+            start_line: StartLine {
+                method: "".to_owned(),
+                uri: Uri::default(),
+                version: HttpVersion(1, 1),
+            },
+            headers: HashMap::new(),
+            body: Vec::new(),
+        }
+    }
+}
+
 pub struct Response {
     pub status: i16,
     pub headers: HashMap<String, String>,

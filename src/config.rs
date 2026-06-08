@@ -54,6 +54,8 @@ pub struct Server {
 
     pub cert_path: Option<PathBuf>,
     pub keys_path: Option<PathBuf>,
+
+    pub error_pages: HashMap<i16, String>
 }
 
 #[derive(Debug, PartialEq)]

@@ -299,6 +299,22 @@ fn parse_server_config<Reader: BufRead>(
                     return Err(ParseError::DuplicateField(token));
                 }
             }
+            "error_page" => {
+                let mut tokens = read_tokens_until_newline(reader)?;
+                if tokens.len() < 2 {
+                    return Err(ParseError::TooFewArgs("error_page".to_owned()));
+                }
+
+                let location = tokens.pop().unwrap();
+                let statuses = tokens
+                    .iter()
+                    .map(|token| token.parse())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(ParseError::ParseIntError)?;
+                for status in statuses {
+                    server.error_pages.insert(status, location.clone());
+                }
+            }
             "set" => {
                 let (var, value) = parse_set(reader, &[&vars, global_vars])?;
                 vars.insert(var, value);
@@ -534,6 +550,12 @@ mod tests {
                     proxy http://example.com
                     proxy_header Host $host
                 }
+
+                route /internal {
+                    body \"Internal server error\"
+                }
+
+                error_page 500 501 /internal
             }
         "});
 
@@ -564,7 +586,8 @@ mod tests {
                                 body_timeout: None,
                                 send_timeout: None,
                                 cert_path: None,
-                                keys_path: None
+                                keys_path: None,
+                                error_pages: HashMap::new()
                             },
                             Server {
                                 port: Some(8080),
@@ -621,6 +644,13 @@ mod tests {
                                         }),
                                         status: None,
                                         headers: HashMap::new(),
+                                    },
+                                    Route {
+                                        uri: "/internal".to_owned(),
+                                        matcher: UriMatcher::Prefix,
+                                        status: None,
+                                        content: Some(Content::RawData("Internal server error".to_owned())),
+                                        headers: HashMap::new(),
                                     }
                                 ]),
                                 header_timeout: None,
@@ -628,6 +658,10 @@ mod tests {
                                 send_timeout: None,
                                 cert_path: None,
                                 keys_path: None,
+                                error_pages: HashMap::from([
+                                    (500, "/internal".to_owned()),
+                                    (501, "/internal".to_owned())
+                                ])
                             },
                         ]),
                         default: 1
