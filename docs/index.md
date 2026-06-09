@@ -16,6 +16,9 @@ cargo build --release
 jjinx --config your-config.conf
 ```
 
+## Протоколы
+Поддерживает HTTP/1.1 и HTTPS
+
 # Конфигурация
 jjinx использует nginx-подобный формат конфигов с рядом отличий
 
@@ -172,17 +175,24 @@ matcher может принимать значение
 ### ip_hash
 Выбирает сервер по хэшу ip клиента
 
-### connect_timeout
+### connect_timeout &lt;timeout&gt;
 Задаёт таймоут на подключение к upstream (в секундах)
 
-### send_timeout
+### send_timeout &lt;timeout&gt;
 Задаёт таймоут на отправку запроса к upstream (в секундах)
 
-### header_timeout
+### header_timeout &lt;timeout&gt;
 Задаёт таймоут на получение заголовка от upstream (в секундах)
 
-### body_timeout
+### body_timeout &lt;timeout&gt;
 Задаёт таймоут на получение тела запроса от upstream (в секундах)
+
+### max_fails &lt;max_fails&gt;
+Если кол-во неудачных запросов к серверу в upstream за последние fail_timeout секунд > max_fails,
+соответсвующий сервер не будет использован для запросов
+
+### fail_timeout &lt;fail_timeout&gt;
+Длина окна, в котором считаются неудачные запросы (в секундах)
 
 ## Переменные
 jjinx может заменять переменные вида $&lt;name&gt; (как строку)
