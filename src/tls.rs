@@ -82,7 +82,8 @@ pub fn make_acceptor(servers: &ServerGroup) -> Result<Option<TlsAcceptor>, TlsEr
                 }
             }
         }
-        let config = config_builder.with_cert_resolver(Arc::new(cert_resolver));
+        let mut config = config_builder.with_cert_resolver(Arc::new(cert_resolver));
+        config.alpn_protocols = Vec::from([b"http/1.1".to_vec()]);
 
         Ok(Some(TlsAcceptor::from(Arc::new(config))))
     } else {
