@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use futures::future::join_all;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
 mod http;
@@ -54,10 +55,17 @@ async fn handle_ip_port(
 
         tokio::spawn(async move {
             if let Some(acceptor) = acceptor {
-                match acceptor.accept(socket).await {
+                match acceptor.accept(&mut socket).await {
                     Ok(mut stream) => {
                         process_connection(&mut stream, addr.ip(), servers, upstreams, connector)
                             .await;
+
+                        match stream.shutdown().await {
+                            Ok(()) => {}
+                            Err(err) => {
+                                println!("Shutdown error {err}");
+                            }
+                        }
                     }
                     Err(err) => {
                         println!("Tls accept error: {err}");
@@ -65,6 +73,13 @@ async fn handle_ip_port(
                 }
             } else {
                 process_connection(&mut socket, addr.ip(), servers, upstreams, connector).await;
+
+                match socket.shutdown().await {
+                    Ok(()) => {}
+                    Err(err) => {
+                        println!("Shutdown error {err}");
+                    }
+                }
             };
         });
     }

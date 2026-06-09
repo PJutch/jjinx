@@ -88,6 +88,10 @@ pub async fn write_response<Writer: AsyncWrite + Unpin>(
             writer.write(b"\r\n").await?;
         }
 
+        if !response.headers.contains_key("Connection") {
+            writer.write(b"Connection: close\r\n").await?;
+        }
+
         writer.write(b"\r\n").await?;
         writer.write(&response.body).await?;
 
