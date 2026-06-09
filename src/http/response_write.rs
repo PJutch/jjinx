@@ -93,9 +93,16 @@ pub async fn write_response<Writer: AsyncWrite + Unpin>(
         }
 
         writer.write(b"\r\n").await?;
-        writer.write(&response.body).await?;
 
-        writer.flush().await?;
+        if response.body.is_empty() {
+            writer.flush().await?;
+        }
+
+        for chunk in response.body.chunks(1024) {
+            writer.write(chunk).await?;
+            writer.flush().await?;
+        }
+
         Ok(())
     })
     .await
