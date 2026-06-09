@@ -1,9 +1,0 @@
-{
-  "build": {
-    "builder": "NIXPACKS",
-    "buildCommand": "cargo build --release"
-  },
-  "start": {
-    "startCommand": "./target/release/jjinx --config docs/jjinx.conf"
-  }
-}
