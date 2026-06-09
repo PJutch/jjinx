@@ -414,6 +414,19 @@ pub fn parse_upstream_config<Reader: BufRead>(
                     return Err(ParseError::DuplicateField(token));
                 }
             }
+            "body_timeout" => {
+                let timeout = Duration::from_secs(
+                    next_token(reader)?
+                        .parse()
+                        .map_err(ParseError::ParseIntError)?,
+                );
+
+                if upstream.body_timeout.is_none() {
+                    upstream.body_timeout = Some(timeout);
+                } else {
+                    return Err(ParseError::DuplicateField(token));
+                }
+            }
             "send_timeout" => {
                 let timeout = Duration::from_secs(
                     next_token(reader)?
