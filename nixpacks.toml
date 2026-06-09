@@ -1,0 +1,17 @@
+[phases.setup]
+nixPkgs = ["rustc", "cargo", "gcc"]
+
+[phases.install]
+cmds = ["cargo fetch"]
+
+[phases.build]
+cmds = ["cargo build --release"]
+
+[phases.postBuild]
+cmds = ["cp -r docs ./target/release/"]
+
+[start]
+cmd = "./target/release/jjinx --config docs/jjinx.conf"
+
+[env]
+RUSTFLAGS = "-C target-cpu=native"
