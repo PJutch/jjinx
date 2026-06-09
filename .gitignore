@@ -1,3 +1,5 @@
 /target
 server.crt
 server.key
+jjinx.conf
+index.html

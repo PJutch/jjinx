@@ -31,10 +31,12 @@ impl Uri {
         &self.full[self.path.0..self.path.1]
     }
 
+    #[allow(dead_code)]
     pub fn query(&self) -> &str {
         &self.full[self.query.0..self.query.1]
     }
 
+    #[allow(dead_code)]
     pub fn fragment(&self) -> &str {
         &self.full[self.fragment_start..]
     }
