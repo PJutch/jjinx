@@ -7,6 +7,7 @@ use super::io::{
 use super::{HttpVersion, ParseError};
 
 use std::collections::HashMap;
+use std::str::from_utf8;
 use std::time::Duration;
 use tokio::io::AsyncBufRead;
 use tokio::time::timeout;
@@ -99,7 +100,7 @@ async fn parse_chunked_body<Reader: AsyncBufRead + Unpin>(
             break;
         }
 
-        let length = str::from_utf8(&length).map_err(ParseError::Utf8ErrorStr)?;
+        let length = from_utf8(&length).map_err(ParseError::Utf8ErrorStr)?;
         let length = usize::from_str_radix(length, 16).map_err(ParseError::ParseIntError)?;
         if length == 0 {
             break;
@@ -109,7 +110,7 @@ async fn parse_chunked_body<Reader: AsyncBufRead + Unpin>(
     }
 
     let mut skip_trailing = true;
-    while  skip_trailing {
+    while skip_trailing {
         timeout(per_read_timeout, async {
             if peek_byte(reader).await?.is_none_or(|c| c == b'\r') {
                 skip_trailing = false;
