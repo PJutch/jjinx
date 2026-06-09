@@ -19,10 +19,30 @@ use std::net::IpAddr;
 
 use tokio::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
 
-fn read_file(path: &str) -> Result<Vec<u8>, io::Error> {
-    let mut result = Vec::new();
-    File::open(path)?.read_to_end(&mut result)?;
-    return Ok(result);
+fn read_file(path: &str) -> Result<Option<Vec<u8>>, io::Error> {
+    if !fs::exists(path)? {
+        return Ok(None);
+    }
+
+    if fs::metadata(path)?.is_dir() {
+        let mut path = path.to_owned();
+        if !path.ends_with('/') {
+            path.push('/');
+        }
+        path.push_str("index.html");
+
+        if !fs::exists(&path)? {
+            return Ok(None);
+        }
+
+        let mut result = Vec::new();
+        File::open(path)?.read_to_end(&mut result)?;
+        return Ok(Some(result));
+    } else {
+        let mut result = Vec::new();
+        File::open(path)?.read_to_end(&mut result)?;
+        return Ok(Some(result));
+    }
 }
 
 #[derive(Debug, Error)]
@@ -59,11 +79,11 @@ async fn construct_response<'a>(
                 let path = &request.start_line.uri.path();
                 let path = path.strip_prefix('/').unwrap_or(path);
 
-                if fs::exists(path).map_err(ServerError::IoError)? {
+                if let Some(data) = read_file(path).map_err(ServerError::IoError)? {
                     Response {
                         status: 200,
                         headers: headers,
-                        body: read_file(path).map_err(ServerError::IoError)?,
+                        body: data,
                     }
                 } else if route.status.is_some() {
                     Response {
@@ -99,10 +119,12 @@ async fn construct_response<'a>(
             let mut found = false;
 
             for file in files {
-                let file = replace_dynamic_vars(&file, request).map_err(ServerError::VarError)?;
+                let mut file =
+                    replace_dynamic_vars(&file, request).map_err(ServerError::VarError)?;
+                file.push_str(&request.start_line.uri.path()[matching.matched_prefix_len..]);
 
-                if fs::exists(&file).map_err(ServerError::IoError)? {
-                    body = read_file(&file).map_err(ServerError::IoError)?;
+                if let Some(data) = read_file(&file).map_err(ServerError::IoError)? {
+                    body = data;
                     found = true;
                 }
             }
