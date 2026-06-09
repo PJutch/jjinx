@@ -1,8 +1,8 @@
 [phases.setup]
-nixPkgs = ["rustc", "cargo", "gcc"]
+nixPkgs = ["rustc_1_94", "cargo_1_94", "gcc"]
 
 [phases.install]
-cmds = ["rustup default stable", "rustup update stable", "cargo --version", "cargo fetch"]
+cmds = ["cargo fetch"]
 
 [phases.build]
 cmds = ["cargo build --release"]
