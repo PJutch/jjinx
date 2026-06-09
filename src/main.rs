@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use clap::Parser;
 use futures::future::join_all;
 use tokio::net::TcpListener;
 
@@ -68,9 +70,21 @@ async fn handle_ip_port(
     }
 }
 
+/// A webserver/reverse-proxy
+#[derive(Debug, Parser)]
+struct Args {
+    /// Config path
+    #[arg(short, long)]
+    config: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config = parse_config(&mut std::io::BufReader::new(File::open("jjinx.conf")?))?;
+    let args = Args::parse();
+
+    let config = parse_config(&mut std::io::BufReader::new(File::open(
+        args.config.unwrap_or_else(|| "jjinx.conf".into()),
+    )?))?;
 
     let upstreams = Arc::new(make_upstreams(config.upstreams));
 
