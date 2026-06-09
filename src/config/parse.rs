@@ -465,7 +465,7 @@ pub fn parse_config<Reader: BufRead>(reader: &mut Reader) -> Result<Config, Pars
     }
 
     for server in servers {
-        let port = server.port.unwrap_or(80);
+        let port = server.port.unwrap_or(8080);
         let ip = server.ip.unwrap_or(IpAddr::V4(Ipv4Addr::from_bits(0)));
 
         if let Some(group) = config.servers.get_mut(&(ip, port)) {
