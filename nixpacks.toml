@@ -11,7 +11,8 @@ cmds = ["cargo build --release"]
 cmds = ["cp -r docs ./target/release/"]
 
 [start]
-cmd = "./target/release/jjinx --config docs/jjinx.conf"
+# cmd = "./target/release/jjinx --config docs/jjinx.conf"
+cmd = "tail -f /dev/null"
 
 [env]
 RUSTFLAGS = "-C target-cpu=native"
