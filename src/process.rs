@@ -19,7 +19,46 @@ use std::net::IpAddr;
 
 use tokio::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
 
-fn read_file(path: &str) -> Result<Option<Vec<u8>>, io::Error> {
+#[derive(Clone, Copy)]
+enum ContentType {
+    Unknown,
+    Html,
+    Css,
+    Js,
+    Json,
+    Xml,
+}
+
+impl ContentType {
+    fn by_path(path: &str) -> ContentType {
+        if path.ends_with(".html") || path.ends_with(".htm") {
+            ContentType::Html
+        } else if path.ends_with(".css") {
+            ContentType::Css
+        } else if path.ends_with(".js") {
+            ContentType::Js
+        } else if path.ends_with(".json") {
+            ContentType::Json
+        } else if path.ends_with(".xml") {
+            ContentType::Xml
+        } else {
+            ContentType::Unknown
+        }
+    }
+
+    fn to_mime(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Html => "text/html",
+            Self::Css => "text/css",
+            Self::Js => "application/javascript",
+            Self::Json => "application/json",
+            Self::Xml => "application/xml",
+            Self::Unknown => return None,
+        })
+    }
+}
+
+fn read_file(path: &str) -> Result<Option<(Vec<u8>, ContentType)>, io::Error> {
     if !fs::exists(path)? {
         return Ok(None);
     }
@@ -37,11 +76,11 @@ fn read_file(path: &str) -> Result<Option<Vec<u8>>, io::Error> {
 
         let mut result = Vec::new();
         File::open(path)?.read_to_end(&mut result)?;
-        return Ok(Some(result));
+        return Ok(Some((result, ContentType::Html)));
     } else {
         let mut result = Vec::new();
         File::open(path)?.read_to_end(&mut result)?;
-        return Ok(Some(result));
+        return Ok(Some((result, ContentType::by_path(path))));
     }
 }
 
@@ -79,7 +118,11 @@ async fn construct_response<'a>(
                 let path = &request.start_line.uri.path();
                 let path = path.strip_prefix('/').unwrap_or(path);
 
-                if let Some(data) = read_file(path).map_err(ServerError::IoError)? {
+                if let Some((data, content_type)) = read_file(path).map_err(ServerError::IoError)? {
+                    if let Some(content_type) = content_type.to_mime() {
+                        headers.insert("Content-Type".to_owned(), content_type.to_owned());
+                    }
+
                     Response {
                         status: 200,
                         headers: headers,
@@ -115,28 +158,32 @@ async fn construct_response<'a>(
                 .to_owned(),
         },
         Some(Content::FileAny(files)) => {
-            let mut body = Vec::new();
-            let mut found = false;
+            let mut body = None;
 
             for file in files {
                 let mut file =
                     replace_dynamic_vars(&file, request).map_err(ServerError::VarError)?;
                 file.push_str(&request.start_line.uri.path()[matching.matched_prefix_len..]);
 
-                if let Some(data) = read_file(&file).map_err(ServerError::IoError)? {
-                    body = data;
-                    found = true;
+                if let Some((data, content_type)) =
+                    read_file(&file).map_err(ServerError::IoError)?
+                {
+                    body = Some((data, content_type));
                 }
             }
 
-            if !found {
-                return Err(ServerError::NotFound);
-            }
+            if let Some((data, content_type)) = body {
+                if let Some(content_type) = content_type.to_mime() {
+                    headers.insert("Content-Type".to_owned(), content_type.to_owned());
+                }
 
-            Response {
-                status: route.status.unwrap_or(if found { 200 } else { 404 }),
-                headers: headers,
-                body: body,
+                Response {
+                    status: route.status.unwrap_or(200),
+                    headers: headers,
+                    body: data,
+                }
+            } else {
+                return Err(ServerError::NotFound);
             }
         }
         Some(Content::Redirect(uri)) => {
