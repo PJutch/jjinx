@@ -121,6 +121,12 @@ async fn construct_response<'a>(
                 if let Some((data, content_type)) = read_file(path).map_err(ServerError::IoError)? {
                     if let Some(content_type) = content_type.to_mime() {
                         headers.insert("Content-Type".to_owned(), content_type.to_owned());
+                    } else if let Some(content_type) = &route.default_content_type {
+                        headers.insert(
+                            "Content-Type".to_owned(),
+                            replace_dynamic_vars(content_type, request)
+                                .map_err(ServerError::VarError)?,
+                        );
                     }
 
                     Response {
@@ -149,14 +155,23 @@ async fn construct_response<'a>(
             headers: headers,
             body: Vec::new(),
         },
-        Some(Content::RawData(data)) => Response {
-            status: route.status.unwrap_or(200),
-            headers: headers,
-            body: replace_dynamic_vars(data, request)
-                .map_err(ServerError::VarError)?
-                .as_bytes()
-                .to_owned(),
-        },
+        Some(Content::RawData(data)) => {
+            if let Some(content_type) = &route.default_content_type {
+                headers.insert(
+                    "Content-Type".to_owned(),
+                    replace_dynamic_vars(content_type, request).map_err(ServerError::VarError)?,
+                );
+            }
+
+            Response {
+                status: route.status.unwrap_or(200),
+                headers: headers,
+                body: replace_dynamic_vars(data, request)
+                    .map_err(ServerError::VarError)?
+                    .as_bytes()
+                    .to_owned(),
+            }
+        }
         Some(Content::FileAny(files)) => {
             let mut body = None;
 
@@ -175,6 +190,12 @@ async fn construct_response<'a>(
             if let Some((data, content_type)) = body {
                 if let Some(content_type) = content_type.to_mime() {
                     headers.insert("Content-Type".to_owned(), content_type.to_owned());
+                } else if let Some(content_type) = &route.default_content_type {
+                    headers.insert(
+                        "Content-Type".to_owned(),
+                        replace_dynamic_vars(content_type, request)
+                            .map_err(ServerError::VarError)?,
+                    );
                 }
 
                 Response {
@@ -217,6 +238,16 @@ async fn construct_response<'a>(
 
             for (header_name, header_value) in headers {
                 response.headers.insert(header_name, header_value);
+            }
+
+            if !response.headers.contains_key("Content-Type") {
+                if let Some(content_type) = &route.default_content_type {
+                    response.headers.insert(
+                        "Content-Type".to_owned(),
+                        replace_dynamic_vars(content_type, request)
+                            .map_err(ServerError::VarError)?,
+                    );
+                }
             }
 
             response

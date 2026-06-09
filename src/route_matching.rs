@@ -86,6 +86,7 @@ mod tests {
                     content: Some(Content::NoContent),
                     status: Some(201),
                     headers: HashMap::new(),
+                    default_content_type: None,
                 },
                 Route {
                     uri: "^/e.*t$".to_string(),
@@ -93,6 +94,7 @@ mod tests {
                     content: Some(Content::NoContent),
                     status: Some(202),
                     headers: HashMap::new(),
+                    default_content_type: None,
                 },
                 Route {
                     uri: "/exa".to_string(),
@@ -100,6 +102,7 @@ mod tests {
                     content: Some(Content::NoContent),
                     status: Some(203),
                     headers: HashMap::new(),
+                    default_content_type: None,
                 },
                 Route {
                     uri: "/ex".to_string(),
@@ -107,6 +110,7 @@ mod tests {
                     content: Some(Content::NoContent),
                     status: Some(204),
                     headers: HashMap::new(),
+                    default_content_type: None,
                 },
             ]),
             header_timeout: None,

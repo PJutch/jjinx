@@ -160,6 +160,17 @@ fn parse_route<Reader: BufRead>(
                     Some(_) => return Err(ParseError::DuplicateContent(route.uri)),
                 }
             }
+            "default_content_type" => {
+                let content_type =
+                    replace_static_vars(&next_token(reader)?, &[&vars, server_vars, global_vars])
+                        .unwrap();
+
+                if route.default_content_type.is_none() {
+                    route.default_content_type = Some(content_type);
+                } else {
+                    return Err(ParseError::DuplicateContent(route.uri));
+                }
+            }
             "header" => {
                 let header_name =
                     replace_static_vars(&next_token(reader)?, &[&vars, server_vars, global_vars])
@@ -300,7 +311,11 @@ fn parse_server_config<Reader: BufRead>(
                 }
             }
             "error_page" => {
-                let mut tokens = read_tokens_until_newline(reader)?;
+                let mut tokens = read_tokens_until_newline(reader)?
+                    .iter()
+                    .map(|token| replace_static_vars(&token, &[&vars, global_vars]))
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
                 if tokens.len() < 2 {
                     return Err(ParseError::TooFewArgs("error_page".to_owned()));
                 }
@@ -581,6 +596,7 @@ mod tests {
                                     content: Some(Content::NoContent),
                                     status: Some(404),
                                     headers: HashMap::new(),
+                                    default_content_type: None,
                                 }]),
                                 header_timeout: None,
                                 body_timeout: None,
@@ -601,6 +617,7 @@ mod tests {
                                         content: Some(Content::Redirect("/index.html".to_owned())),
                                         status: None,
                                         headers: HashMap::new(),
+                                        default_content_type: None,
                                     },
                                     Route {
                                         uri: "/index.html".to_owned(),
@@ -615,13 +632,15 @@ mod tests {
                                             "Content-Type".to_owned(),
                                             "text/html".into()
                                         )])),
+                                        default_content_type: None,
                                     },
                                     Route {
                                         uri: "/images/".to_owned(),
                                         matcher: UriMatcher::Prefix,
                                         content: None,
                                         status: None,
-                                        headers: HashMap::new()
+                                        headers: HashMap::new(),
+                                        default_content_type: None,
                                     },
                                     Route {
                                         uri: "/test".to_owned(),
@@ -631,6 +650,7 @@ mod tests {
                                         )),
                                         status: None,
                                         headers: HashMap::new(),
+                                        default_content_type: None,
                                     },
                                     Route {
                                         uri: "/proxy".to_owned(),
@@ -644,13 +664,17 @@ mod tests {
                                         }),
                                         status: None,
                                         headers: HashMap::new(),
+                                        default_content_type: None,
                                     },
                                     Route {
                                         uri: "/internal".to_owned(),
                                         matcher: UriMatcher::Prefix,
                                         status: None,
-                                        content: Some(Content::RawData("Internal server error".to_owned())),
+                                        content: Some(Content::RawData(
+                                            "Internal server error".to_owned()
+                                        )),
                                         headers: HashMap::new(),
+                                        default_content_type: None,
                                     }
                                 ]),
                                 header_timeout: None,

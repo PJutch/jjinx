@@ -37,6 +37,7 @@ pub struct Route {
     pub content: Option<Content>,
     pub status: Option<i16>,
     pub headers: HashMap<String, String>,
+    pub default_content_type: Option<String>,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -55,7 +56,7 @@ pub struct Server {
     pub cert_path: Option<PathBuf>,
     pub keys_path: Option<PathBuf>,
 
-    pub error_pages: HashMap<i16, String>
+    pub error_pages: HashMap<i16, String>,
 }
 
 #[derive(Debug, PartialEq)]
