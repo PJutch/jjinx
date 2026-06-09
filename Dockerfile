@@ -15,6 +15,7 @@ COPY Cargo.toml ./
 RUN cargo build --release
 
 COPY --from=docs-builder /app/_site ./_site
+COPY presentation _site/presentation
 COPY docs/jjinx.conf ./jjinx.conf
 
 EXPOSE 8080
