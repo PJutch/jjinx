@@ -2,12 +2,7 @@
 nixPkgs = ["rustc", "cargo", "gcc"]
 
 [phases.install]
-cmds = [
-    "rustup default stable",
-    "rustup update stable",
-    "cargo --version"
-    "cargo fetch"
-]
+cmds = ["rustup default stable", "rustup update stable", "cargo --version" "cargo fetch"]
 
 [phases.build]
 cmds = ["cargo build --release"]
