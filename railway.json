@@ -1,6 +1,6 @@
 {
   "build": {
-    "builder": "NIXPACKS",
+    "builder": "rust",
     "buildCommand": "cargo build --release"
   },
   "start": {
