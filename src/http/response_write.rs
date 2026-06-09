@@ -92,6 +92,10 @@ pub async fn write_response<Writer: AsyncWrite + Unpin>(
             writer.write(b"Connection: close\r\n").await?;
         }
 
+        if !response.headers.contains_key("Server") {
+            writer.write(b"Server: jjinx\r\n").await?;
+        }
+
         writer.write(b"\r\n").await?;
 
         if response.body.is_empty() {
